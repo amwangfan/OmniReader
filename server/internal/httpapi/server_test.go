@@ -55,7 +55,15 @@ func TestLoginPageRendersStyledForm(t *testing.T) {
 		t.Fatalf("status = %d, want %d", res.Code, http.StatusOK)
 	}
 	body := res.Body.String()
-	for _, want := range []string{"Self-hosted reading sync", "Welcome back", `name="username"`, `name="password"`, "Enter library"} {
+	for _, want := range []string{
+		"Self-hosted reading sync",
+		"Welcome back",
+		`name="username"`,
+		`name="password"`,
+		"Enter library",
+		`<span class="brand-line">Omni</span>`,
+		`<span class="brand-line">Reader</span>`,
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("login page missing %q: %s", want, body)
 		}
@@ -300,6 +308,37 @@ func TestWebLoginCookieAllowsAdminBooksPage(t *testing.T) {
 	}
 	if !strings.Contains(adminRes.Body.String(), "__omniAdminNavigation") {
 		t.Fatalf("admin page missing navigation script: %s", adminRes.Body.String())
+	}
+}
+
+func TestAdminPagesUseSharedApplicationRoot(t *testing.T) {
+	handler := testAuthHandler(t)
+	cookie := webLoginForTest(t, handler)
+
+	for _, route := range []string{"/admin/books", "/admin/novels", "/admin/sync", "/admin/settings"} {
+		t.Run(route, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, route, nil)
+			req.AddCookie(cookie)
+			res := httptest.NewRecorder()
+
+			handler.ServeHTTP(res, req)
+
+			if res.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+			}
+			body := res.Body.String()
+			if strings.Count(body, `id="admin-app"`) != 1 {
+				t.Fatalf("must render exactly one admin root: %s", body)
+			}
+			for _, want := range []string{`querySelector("#admin-app")`, `replaceWith(nextRoot)`} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("navigation missing %q: %s", want, body)
+				}
+			}
+			if strings.Contains(body, `querySelector("main").replaceWith`) {
+				t.Fatalf("navigation still replaces only main: %s", body)
+			}
+		})
 	}
 }
 
