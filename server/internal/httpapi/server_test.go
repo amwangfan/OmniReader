@@ -336,6 +336,8 @@ func TestAdminPagesUsePersistentShell(t *testing.T) {
 				`querySelector("#admin-content")`,
 				`replaceWith(nextContent)`,
 				`updateActiveNavigation(url.pathname)`,
+				`html { overflow-y: scroll; }`,
+				`* { box-sizing: border-box; }`,
 			} {
 				if !strings.Contains(body, marker) {
 					t.Fatalf("%s missing %q: %s", route, marker, body)

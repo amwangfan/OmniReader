@@ -596,6 +596,7 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       --danger: #9b2f2f;
       --shadow: 0 18px 60px rgba(52, 38, 21, 0.12);
     }
+    html { overflow-y: scroll; }
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -861,6 +862,8 @@ func novelsPage(authService *auth.Service, bookService *books.Service) http.Hand
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OmniReader Novel Management</title>
   <style>
+    html { overflow-y: scroll; }
+    * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, sans-serif; color: #252018; background: linear-gradient(135deg,#fbf7ef,#f1e5d2); }
     .admin-header { max-width: 1120px; margin: 0 auto; padding: 36px 24px 18px; }
     .admin-eyebrow { margin: 0 0 8px; color: #1f6f5b; font: 700 12px/1.2 ui-sans-serif,system-ui,sans-serif; letter-spacing: .16em; text-transform: uppercase; }
@@ -987,6 +990,8 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OmniReader Sync</title>
   <style>
+    html { overflow-y: scroll; }
+    * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, sans-serif; color: #252018; background: linear-gradient(135deg,#fbf7ef,#f1e5d2); }
     .admin-header { max-width: 1120px; margin: 0 auto; padding: 36px 24px 18px; }
     .admin-eyebrow { margin: 0 0 8px; color: #1f6f5b; font: 700 12px/1.2 ui-sans-serif,system-ui,sans-serif; letter-spacing: .16em; text-transform: uppercase; }
@@ -1050,6 +1055,8 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OmniReader Settings</title>
   <style>
+    html { overflow-y: scroll; }
+    * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, sans-serif; color: #252018; background: linear-gradient(135deg,#fbf7ef,#f1e5d2); }
     .admin-header { max-width: 1120px; margin: 0 auto; padding: 36px 24px 18px; }
     .admin-eyebrow { margin: 0 0 8px; color: #1f6f5b; font: 700 12px/1.2 ui-sans-serif,system-ui,sans-serif; letter-spacing: .16em; text-transform: uppercase; }
