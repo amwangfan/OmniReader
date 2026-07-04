@@ -31,6 +31,7 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("POST /api/v1/auth/logout", logout(opts.AuthService))
 		mux.HandleFunc("GET /api/v1/me", me(opts.AuthService))
 		mux.HandleFunc("GET /login", loginPage)
+		mux.HandleFunc("POST /login", webLogin(opts.AuthService))
 	}
 	if opts.AuthService != nil && opts.BookService != nil {
 		mux.HandleFunc("GET /api/v1/books", listBooks(opts.AuthService, opts.BookService))
@@ -165,10 +166,37 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
 <body>
   <main>
     <h1>OmniReader</h1>
-    <p>Server-rendered admin UI is starting with login/API foundations.</p>
+    <form method="post" action="/login">
+      <p><input type="text" name="username" placeholder="Username" autocomplete="username" required></p>
+      <p><input type="password" name="password" placeholder="Password" autocomplete="current-password" required></p>
+      <p><button type="submit">Login</button></p>
+    </form>
   </main>
 </body>
 </html>`))
+}
+
+func webLogin(service *auth.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		result, err := service.Login(r.Context(), r.FormValue("username"), r.FormValue("password"), "web-admin")
+		if err != nil {
+			http.Error(w, "invalid username or password", http.StatusUnauthorized)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     "omnireader_access",
+			Value:    result.AccessToken,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  result.ExpiresAt,
+		})
+		http.Redirect(w, r, "/admin/books", http.StatusSeeOther)
+	}
 }
 
 func listBooks(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
@@ -269,7 +297,7 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
     <h2>Library</h2>
     <ul>
       {{range .Books}}
-      <li>{{.Title}} {{if .Author}}— {{.Author}}{{end}} <small>{{.FileSize}} bytes</small></li>
+      <li><a href="/api/v1/books/{{.ID}}/download">{{.Title}}</a> {{if .Author}}— {{.Author}}{{end}} <small>{{.FileSize}} bytes</small></li>
       {{else}}
       <li>No books uploaded yet.</li>
       {{end}}
@@ -293,12 +321,23 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
 }
 
 func requireUser(w http.ResponseWriter, r *http.Request, service *auth.Service) (auth.User, bool) {
-	user, err := service.VerifyBearer(r.Context(), r.Header.Get("Authorization"))
+	user, err := service.VerifyBearer(r.Context(), authorizationValue(r))
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return auth.User{}, false
 	}
 	return user, true
+}
+
+func authorizationValue(r *http.Request) string {
+	if value := r.Header.Get("Authorization"); value != "" {
+		return value
+	}
+	cookie, err := r.Cookie("omnireader_access")
+	if err != nil || cookie.Value == "" {
+		return ""
+	}
+	return "Bearer " + cookie.Value
 }
 
 func safeFilename(value string) string {

@@ -8,6 +8,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -206,6 +208,35 @@ func TestBookEndpointsRejectAnonymousRequests(t *testing.T) {
 
 	if res.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", res.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestWebLoginCookieAllowsAdminBooksPage(t *testing.T) {
+	handler := testAuthHandler(t)
+	form := url.Values{}
+	form.Set("username", "admin")
+	form.Set("password", "password")
+	loginReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRes := httptest.NewRecorder()
+	handler.ServeHTTP(loginRes, loginReq)
+	if loginRes.Code != http.StatusSeeOther {
+		t.Fatalf("web login status = %d, body = %s", loginRes.Code, loginRes.Body.String())
+	}
+	cookies := loginRes.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected login cookie")
+	}
+
+	adminReq := httptest.NewRequest(http.MethodGet, "/admin/books", nil)
+	adminReq.AddCookie(cookies[0])
+	adminRes := httptest.NewRecorder()
+	handler.ServeHTTP(adminRes, adminReq)
+	if adminRes.Code != http.StatusOK {
+		t.Fatalf("admin books status = %d, body = %s", adminRes.Code, adminRes.Body.String())
+	}
+	if !strings.Contains(adminRes.Body.String(), "OmniReader Books") {
+		t.Fatalf("unexpected admin page: %s", adminRes.Body.String())
 	}
 }
 
