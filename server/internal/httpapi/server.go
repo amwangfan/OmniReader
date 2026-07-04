@@ -26,15 +26,88 @@ type Options struct {
 	BookService *books.Service
 }
 
+const adminNavigationScript = `<script>
+(() => {
+  if (window.__omniAdminNavigation) return;
+  window.__omniAdminNavigation = true;
+  const paths = new Set(["/admin/books", "/admin/novels", "/admin/sync", "/admin/settings"]);
+  function ensureTransitionStyle() {
+    if (document.getElementById("omnireader-transition-style")) return;
+    const style = document.createElement("style");
+    style.id = "omnireader-transition-style";
+    style.textContent =
+      "main { will-change: transform, opacity; }" +
+      ".omni-slide-out { opacity: 0; transform: translateX(-18px); transition: opacity 150ms ease, transform 150ms ease; }" +
+      ".omni-slide-in { opacity: 0; transform: translateX(22px); }" +
+      ".omni-slide-in.omni-slide-in-active { opacity: 1; transform: translateX(0); transition: opacity 220ms ease, transform 220ms cubic-bezier(.22,1,.36,1); }" +
+      "@media (prefers-reduced-motion: reduce) { .omni-slide-out, .omni-slide-in.omni-slide-in-active { transition: none; transform: none; } }";
+    document.head.appendChild(style);
+  }
+  function adminURL(href) {
+    const url = new URL(href, window.location.href);
+    return paths.has(url.pathname) ? url : null;
+  }
+  async function navigate(href, push) {
+    const url = adminURL(href);
+    if (!url) {
+      window.location.href = href;
+      return;
+    }
+    const current = document.querySelector("main");
+    if (!current) {
+      window.location.href = url.href;
+      return;
+    }
+    ensureTransitionStyle();
+    current.classList.add("omni-slide-out");
+    await new Promise(resolve => setTimeout(resolve, 140));
+    const response = await fetch(url.href, { headers: { "X-OmniReader-Navigation": "1" } });
+    if (!response.ok) {
+      window.location.href = url.href;
+      return;
+    }
+    const html = await response.text();
+    const nextDoc = new DOMParser().parseFromString(html, "text/html");
+    const nextMain = nextDoc.querySelector("main");
+    if (!nextMain) {
+      window.location.href = url.href;
+      return;
+    }
+    document.head.innerHTML = nextDoc.head.innerHTML;
+    ensureTransitionStyle();
+    document.querySelector("main").replaceWith(nextMain);
+    document.title = nextDoc.title || document.title;
+    if (push) history.pushState({}, "", url.pathname + url.search);
+    const entered = document.querySelector("main");
+    entered.classList.add("omni-slide-in");
+    requestAnimationFrame(() => entered.classList.add("omni-slide-in-active"));
+    setTimeout(() => entered.classList.remove("omni-slide-in", "omni-slide-in-active"), 280);
+  }
+  document.addEventListener("click", event => {
+    const link = event.target.closest("a[href]");
+    if (!link || link.target || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const url = adminURL(link.href);
+    if (!url) return;
+    event.preventDefault();
+    navigate(url.href, true).catch(() => { window.location.href = url.href; });
+  });
+  window.addEventListener("popstate", () => {
+    navigate(window.location.href, false).catch(() => window.location.reload());
+  });
+  ensureTransitionStyle();
+})();
+</script>`
+
 func NewHandler(opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz(opts.BuildInfo))
 	if opts.AuthService != nil {
+		mux.HandleFunc("GET /", rootPage(opts.AuthService))
 		mux.HandleFunc("POST /api/v1/auth/login", login(opts.AuthService))
 		mux.HandleFunc("POST /api/v1/auth/refresh", refresh(opts.AuthService))
 		mux.HandleFunc("POST /api/v1/auth/logout", logout(opts.AuthService))
 		mux.HandleFunc("GET /api/v1/me", me(opts.AuthService))
-		mux.HandleFunc("GET /login", loginPage)
+		mux.HandleFunc("GET /login", loginPage(opts.AuthService))
 		mux.HandleFunc("POST /login", webLogin(opts.AuthService))
 	}
 	if opts.AuthService != nil && opts.BookService != nil {
@@ -58,6 +131,20 @@ func NewHandler(opts Options) http.Handler {
 
 func adminHome(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/books", http.StatusSeeOther)
+}
+
+func rootPage(authService *auth.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := authService.VerifyBearer(r.Context(), authorizationValue(r)); err == nil {
+			http.Redirect(w, r, "/admin/books", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	}
 }
 
 func healthz(info BuildInfo) http.HandlerFunc {
@@ -171,9 +258,14 @@ func me(service *auth.Service) http.HandlerFunc {
 	}
 }
 
-func loginPage(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(`<!doctype html>
+func loginPage(authService *auth.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, err := authService.VerifyBearer(r.Context(), authorizationValue(r)); err == nil {
+			http.Redirect(w, r, "/admin/books", http.StatusSeeOther)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -195,6 +287,7 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
     body {
       margin: 0;
       min-height: 100vh;
+      min-width: 360px;
       color: var(--text);
       background:
         radial-gradient(circle at 12% 18%, rgba(255, 214, 139, .42), transparent 24rem),
@@ -203,13 +296,15 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       display: grid;
       place-items: center;
-      padding: 28px;
+      padding: clamp(18px, 3.4vw, 42px);
+      overflow-x: auto;
     }
     .shell {
-      width: min(980px, 100%);
+      width: clamp(360px, 88vw, 1080px);
+      min-height: clamp(560px, calc(100vh - 84px), 760px);
       display: grid;
-      grid-template-columns: 1.05fr .95fr;
-      gap: 22px;
+      grid-template-columns: minmax(0, 1.08fr) minmax(320px, .92fr);
+      gap: clamp(16px, 2.4vw, 28px);
       align-items: stretch;
     }
     .hero, .card {
@@ -220,8 +315,8 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
       backdrop-filter: blur(16px);
     }
     .hero {
-      padding: clamp(28px, 5vw, 48px);
-      min-height: 470px;
+      padding: clamp(28px, 4.6vw, 56px);
+      min-height: clamp(390px, 52vw, 600px);
       display: flex;
       flex-direction: column;
       justify-content: space-between;
@@ -249,7 +344,7 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
     h1 {
       margin: 0;
       font-family: ui-serif, "Iowan Old Style", Georgia, "Noto Serif SC", serif;
-      font-size: clamp(44px, 7vw, 82px);
+      font-size: clamp(48px, 7.2vw, 88px);
       line-height: .88;
       letter-spacing: -.06em;
     }
@@ -257,7 +352,7 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
       margin: 18px 0 0;
       max-width: 520px;
       color: var(--muted);
-      font-size: 16px;
+      font-size: clamp(15px, 1.35vw, 17px);
       line-height: 1.8;
     }
     .chips {
@@ -277,7 +372,7 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
       font-size: 13px;
     }
     .card {
-      padding: clamp(24px, 4vw, 38px);
+      padding: clamp(26px, 3.8vw, 44px);
       display: flex;
       flex-direction: column;
       justify-content: center;
@@ -285,7 +380,7 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
     h2 {
       margin: 0 0 8px;
       font-family: ui-serif, Georgia, "Noto Serif SC", serif;
-      font-size: 30px;
+      font-size: clamp(28px, 3.1vw, 36px);
       letter-spacing: -.035em;
     }
     .hint {
@@ -337,9 +432,18 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
       line-height: 1.6;
     }
     @media (max-width: 820px) {
-      body { padding: 18px; }
-      .shell { grid-template-columns: 1fr; }
-      .hero { min-height: 320px; }
+      .shell {
+        width: clamp(360px, 92vw, 620px);
+        grid-template-columns: 1fr;
+        min-height: auto;
+      }
+      .hero { min-height: clamp(300px, 54vw, 380px); }
+    }
+    @media (max-width: 360px) {
+      body {
+        width: 360px;
+        place-items: start center;
+      }
     }
   </style>
 </head>
@@ -372,6 +476,7 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
   </main>
 </body>
 </html>`))
+	}
 }
 
 func webLogin(service *auth.Service) http.HandlerFunc {
@@ -704,6 +809,7 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       </div>
     </section>
   </main>
+` + adminNavigationScript + `
 </body>
 </html>`))
 
@@ -827,6 +933,7 @@ func novelsPage(authService *auth.Service, bookService *books.Service) http.Hand
       <p class="muted">&#21518;&#32493;&#21487;&#20197;&#22312;&#36825;&#37324;&#22686;&#21152; EPUB &#20869;&#37096; OPF &#20803;&#25968;&#25454;&#22238;&#20889;&#12289;&#31456;&#33410; HTML &#20462;&#35746;&#12289;&#23553;&#38754;&#26367;&#25442;&#31561;&#21151;&#33021;&#12290;&#24403;&#21069;&#29256;&#26412;&#21482;&#32500;&#25252;&#26381;&#21153;&#22120;&#25968;&#25454;&#24211;&#21644;&#20445;&#23384;&#25991;&#20214;&#21517;&#65292;&#19981;&#30452;&#25509;&#25913;&#20889; EPUB &#20869;&#23481;&#12290;</p>
     </section>
   </main>
+` + adminNavigationScript + `
 </body>
 </html>`))
 
@@ -910,6 +1017,7 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
       <p class="muted">&#36825;&#37324;&#20250;&#25215;&#36733;&#35774;&#22791; last seen&#12289;&#20070;&#31821;&#25289;&#21462;&#38431;&#21015;&#12289;&#38405;&#35835;&#36827;&#24230;&#20914;&#31361;&#25552;&#31034;&#12289;&#25554;&#20214;&#19979;&#36733;&#35760;&#24405;&#31561;&#21151;&#33021;&#12290;</p>
     </section>
   </main>
+` + adminNavigationScript + `
 </body>
 </html>`))
 
@@ -978,6 +1086,7 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
       </form>
     </section>
   </main>
+` + adminNavigationScript + `
 </body>
 </html>`))
 

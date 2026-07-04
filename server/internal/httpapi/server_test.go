@@ -62,6 +62,40 @@ func TestLoginPageRendersStyledForm(t *testing.T) {
 	}
 }
 
+func TestRootRedirectsByAuthState(t *testing.T) {
+	handler := testAuthHandler(t)
+
+	anonReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	anonRes := httptest.NewRecorder()
+	handler.ServeHTTP(anonRes, anonReq)
+	if anonRes.Code != http.StatusSeeOther || anonRes.Header().Get("Location") != "/login" {
+		t.Fatalf("anonymous root status = %d location = %q", anonRes.Code, anonRes.Header().Get("Location"))
+	}
+
+	cookie := webLoginForTest(t, handler)
+	authReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	authReq.AddCookie(cookie)
+	authRes := httptest.NewRecorder()
+	handler.ServeHTTP(authRes, authReq)
+	if authRes.Code != http.StatusSeeOther || authRes.Header().Get("Location") != "/admin/books" {
+		t.Fatalf("authenticated root status = %d location = %q", authRes.Code, authRes.Header().Get("Location"))
+	}
+}
+
+func TestLoginPageRedirectsAuthenticatedUser(t *testing.T) {
+	handler := testAuthHandler(t)
+	cookie := webLoginForTest(t, handler)
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusSeeOther || res.Header().Get("Location") != "/admin/books" {
+		t.Fatalf("status = %d location = %q", res.Code, res.Header().Get("Location"))
+	}
+}
+
 func TestLoginAndMe(t *testing.T) {
 	handler := testAuthHandler(t)
 
@@ -264,6 +298,9 @@ func TestWebLoginCookieAllowsAdminBooksPage(t *testing.T) {
 	if !strings.Contains(adminRes.Body.String(), "Personal library sync") {
 		t.Fatalf("unexpected admin page: %s", adminRes.Body.String())
 	}
+	if !strings.Contains(adminRes.Body.String(), "__omniAdminNavigation") {
+		t.Fatalf("admin page missing navigation script: %s", adminRes.Body.String())
+	}
 }
 
 func TestWebUploadRedirectsBackToLibrary(t *testing.T) {
@@ -365,6 +402,9 @@ func TestSyncPageRendersPlaceholder(t *testing.T) {
 	}
 	if !strings.Contains(res.Body.String(), "OmniReader Sync") || !strings.Contains(res.Body.String(), "&#24453;&#21516;&#27493;&#20219;&#21153;") {
 		t.Fatalf("sync page missing expected content: %s", res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "__omniAdminNavigation") {
+		t.Fatalf("sync page missing navigation script: %s", res.Body.String())
 	}
 }
 
