@@ -9,12 +9,16 @@ import (
 const (
 	DefaultAddr    = "127.0.0.1:8080"
 	DefaultDataDir = "data"
+	DefaultAdmin   = "admin"
 )
 
 type Config struct {
-	Addr         string
-	DataDir      string
-	DatabasePath string
+	Addr          string
+	DataDir       string
+	DatabasePath  string
+	AdminUsername string
+	AdminPassword string
+	TokenSecret   string
 }
 
 func LoadFromEnv() Config {
@@ -25,11 +29,17 @@ func Load(lookup func(string) (string, bool)) Config {
 	addr := valueOrDefault(lookup, "OMNIREADER_ADDR", DefaultAddr)
 	dataDir := valueOrDefault(lookup, "OMNIREADER_DATA_DIR", DefaultDataDir)
 	databasePath := valueOrDefault(lookup, "OMNIREADER_DATABASE_PATH", filepath.Join(dataDir, "app.db"))
+	adminUsername := valueOrDefault(lookup, "OMNIREADER_ADMIN_USERNAME", DefaultAdmin)
+	adminPassword := valueOrDefault(lookup, "OMNIREADER_ADMIN_PASSWORD", "")
+	tokenSecret := valueOrDefault(lookup, "OMNIREADER_TOKEN_SECRET", "")
 
 	return Config{
-		Addr:         addr,
-		DataDir:      dataDir,
-		DatabasePath: databasePath,
+		Addr:          addr,
+		DataDir:       dataDir,
+		DatabasePath:  databasePath,
+		AdminUsername: adminUsername,
+		AdminPassword: adminPassword,
+		TokenSecret:   tokenSecret,
 	}
 }
 

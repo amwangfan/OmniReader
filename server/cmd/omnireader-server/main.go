@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/amwangfan/omnireader/server/internal/auth"
 	"github.com/amwangfan/omnireader/server/internal/config"
 	"github.com/amwangfan/omnireader/server/internal/db"
 	"github.com/amwangfan/omnireader/server/internal/httpapi"
@@ -36,7 +37,22 @@ func run() error {
 	}
 	defer conn.Close()
 
-	handler := httpapi.NewHandler(httpapi.BuildInfo{Version: version})
+	authService, err := auth.NewService(conn, auth.Options{
+		AdminUsername: cfg.AdminUsername,
+		AdminPassword: cfg.AdminPassword,
+		TokenSecret:   cfg.TokenSecret,
+	})
+	if err != nil {
+		return err
+	}
+	if err := authService.BootstrapAdmin(ctx); err != nil {
+		return err
+	}
+
+	handler := httpapi.NewHandler(httpapi.Options{
+		BuildInfo:   httpapi.BuildInfo{Version: version},
+		AuthService: authService,
+	})
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           handler,

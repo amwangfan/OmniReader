@@ -1,14 +1,22 @@
 package httpapi
 
 import (
+	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/amwangfan/omnireader/server/internal/auth"
+	"github.com/amwangfan/omnireader/server/internal/db"
+	_ "modernc.org/sqlite"
 )
 
 func TestHealthz(t *testing.T) {
-	handler := NewHandler(BuildInfo{Version: "test"})
+	handler := NewHandler(Options{BuildInfo: BuildInfo{Version: "test"}})
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	res := httptest.NewRecorder()
 
@@ -28,4 +36,129 @@ func TestHealthz(t *testing.T) {
 	if body["service"] != "omnireader" || body["status"] != "ok" || body["version"] != "test" {
 		t.Fatalf("unexpected body: %#v", body)
 	}
+}
+
+func TestLoginAndMe(t *testing.T) {
+	handler := testAuthHandler(t)
+
+	loginBody := bytes.NewBufferString(`{"username":"admin","password":"password","clientLabel":"test"}`)
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", loginBody)
+	loginRes := httptest.NewRecorder()
+	handler.ServeHTTP(loginRes, loginReq)
+
+	if loginRes.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", loginRes.Code, loginRes.Body.String())
+	}
+	var loginPayload map[string]string
+	if err := json.NewDecoder(loginRes.Body).Decode(&loginPayload); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	if loginPayload["accessToken"] == "" || loginPayload["refreshToken"] == "" {
+		t.Fatalf("missing tokens: %#v", loginPayload)
+	}
+
+	meReq := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	meReq.Header.Set("Authorization", "Bearer "+loginPayload["accessToken"])
+	meRes := httptest.NewRecorder()
+	handler.ServeHTTP(meRes, meReq)
+
+	if meRes.Code != http.StatusOK {
+		t.Fatalf("me status = %d, body = %s", meRes.Code, meRes.Body.String())
+	}
+	var mePayload map[string]string
+	if err := json.NewDecoder(meRes.Body).Decode(&mePayload); err != nil {
+		t.Fatalf("decode me response: %v", err)
+	}
+	if mePayload["username"] != "admin" {
+		t.Fatalf("unexpected me payload: %#v", mePayload)
+	}
+}
+
+func TestRefreshAndLogoutEndpoints(t *testing.T) {
+	handler := testAuthHandler(t)
+	loginBody := bytes.NewBufferString(`{"username":"admin","password":"password","clientLabel":"test"}`)
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", loginBody)
+	loginRes := httptest.NewRecorder()
+	handler.ServeHTTP(loginRes, loginReq)
+	if loginRes.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", loginRes.Code, loginRes.Body.String())
+	}
+	var loginPayload map[string]string
+	if err := json.NewDecoder(loginRes.Body).Decode(&loginPayload); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+
+	refreshBody := bytes.NewBufferString(`{"refreshToken":"` + loginPayload["refreshToken"] + `"}`)
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", refreshBody)
+	refreshRes := httptest.NewRecorder()
+	handler.ServeHTTP(refreshRes, refreshReq)
+	if refreshRes.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d, body = %s", refreshRes.Code, refreshRes.Body.String())
+	}
+	var refreshPayload map[string]string
+	if err := json.NewDecoder(refreshRes.Body).Decode(&refreshPayload); err != nil {
+		t.Fatalf("decode refresh response: %v", err)
+	}
+	if refreshPayload["accessToken"] == "" {
+		t.Fatalf("missing refreshed access token: %#v", refreshPayload)
+	}
+
+	logoutBody := bytes.NewBufferString(`{"refreshToken":"` + loginPayload["refreshToken"] + `"}`)
+	logoutReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", logoutBody)
+	logoutRes := httptest.NewRecorder()
+	handler.ServeHTTP(logoutRes, logoutReq)
+	if logoutRes.Code != http.StatusNoContent {
+		t.Fatalf("logout status = %d, body = %s", logoutRes.Code, logoutRes.Body.String())
+	}
+
+	refreshAgainBody := bytes.NewBufferString(`{"refreshToken":"` + loginPayload["refreshToken"] + `"}`)
+	refreshAgainReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", refreshAgainBody)
+	refreshAgainRes := httptest.NewRecorder()
+	handler.ServeHTTP(refreshAgainRes, refreshAgainReq)
+	if refreshAgainRes.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh after logout status = %d", refreshAgainRes.Code)
+	}
+}
+
+func TestMeRejectsAnonymousRequest(t *testing.T) {
+	handler := testAuthHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", res.Code, http.StatusUnauthorized)
+	}
+}
+
+func testAuthHandler(t *testing.T) http.Handler {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := db.RunMigrations(ctx, conn); err != nil {
+		t.Fatalf("RunMigrations returned error: %v", err)
+	}
+	service, err := auth.NewService(conn, auth.Options{
+		AdminUsername: "admin",
+		AdminPassword: "password",
+		TokenSecret:   "test-secret",
+		Now: func() time.Time {
+			return time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewService returned error: %v", err)
+	}
+	if err := service.BootstrapAdmin(ctx); err != nil {
+		t.Fatalf("BootstrapAdmin returned error: %v", err)
+	}
+	return NewHandler(Options{
+		BuildInfo:   BuildInfo{Version: "test"},
+		AuthService: service,
+	})
 }

@@ -26,6 +26,8 @@ Server commands, once Go 1.25 or newer is installed locally:
 ```powershell
 cd E:\Codex\Projects\OmniReader\server
 go test ./...
+$env:OMNIREADER_ADMIN_PASSWORD='change-me'
+$env:OMNIREADER_TOKEN_SECRET='local-dev-token-secret'
 go run ./cmd/omnireader-server
 ```
 

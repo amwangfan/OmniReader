@@ -20,13 +20,19 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.DatabasePath != wantDB {
 		t.Fatalf("database path = %q, want %q", cfg.DatabasePath, wantDB)
 	}
+	if cfg.AdminUsername != DefaultAdmin {
+		t.Fatalf("admin username = %q, want %q", cfg.AdminUsername, DefaultAdmin)
+	}
 }
 
 func TestLoadAcceptsOverrides(t *testing.T) {
 	values := map[string]string{
-		"OMNIREADER_ADDR":          "0.0.0.0:9090",
-		"OMNIREADER_DATA_DIR":      "/opt/omnireader/data",
-		"OMNIREADER_DATABASE_PATH": "/opt/omnireader/data/custom.db",
+		"OMNIREADER_ADDR":           "0.0.0.0:9090",
+		"OMNIREADER_DATA_DIR":       "/opt/omnireader/data",
+		"OMNIREADER_DATABASE_PATH":  "/opt/omnireader/data/custom.db",
+		"OMNIREADER_ADMIN_USERNAME": "owner",
+		"OMNIREADER_ADMIN_PASSWORD": "secret-password",
+		"OMNIREADER_TOKEN_SECRET":   "token-secret",
 	}
 
 	cfg := Load(func(key string) (string, bool) {
@@ -42,6 +48,15 @@ func TestLoadAcceptsOverrides(t *testing.T) {
 	}
 	if cfg.DatabasePath != "/opt/omnireader/data/custom.db" {
 		t.Fatalf("database path = %q", cfg.DatabasePath)
+	}
+	if cfg.AdminUsername != "owner" {
+		t.Fatalf("admin username = %q", cfg.AdminUsername)
+	}
+	if cfg.AdminPassword != "secret-password" {
+		t.Fatalf("admin password = %q", cfg.AdminPassword)
+	}
+	if cfg.TokenSecret != "token-secret" {
+		t.Fatalf("token secret = %q", cfg.TokenSecret)
 	}
 }
 
