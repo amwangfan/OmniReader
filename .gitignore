@@ -1,0 +1,34 @@
+# Local configuration and secrets
+.env
+*.env
+config.env
+
+# OmniReader runtime data
+data/
+server/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Go build/test outputs
+server/bin/
+*.test
+coverage.out
+
+# Android / Gradle outputs
+.gradle/
+build/
+android/.gradle/
+android/build/
+android/**/build/
+local.properties
+
+# IDE/editor
+.idea/
+.vscode/
+*.iml
+
+# OS noise
+.DS_Store
+Thumbs.db
+

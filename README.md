@@ -18,3 +18,15 @@ The design starts from the existing local repository at:
 This project is authored and owned by the repository owner's GitHub account. Codex is used as an end-to-end engineering assistant for design, planning, implementation, testing, and documentation, but Codex is not the code author.
 
 See [MVP design](docs/design/mvp-design.md).
+
+## Local development
+
+Server commands, once Go is installed locally:
+
+```powershell
+cd E:\Codex\Projects\OmniReader\server
+go test ./...
+go run ./cmd/omnireader-server
+```
+
+The default server data directory is `server\data`, and runtime data is intentionally ignored by Git.
