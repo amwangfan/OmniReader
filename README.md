@@ -1,4 +1,4 @@
-# BOOX Books Sync Next
+# OmniReader
 
 Experimental rewrite of `amwangfan/boox-books-sync` from a Magisk/rclone based BOOX sync module into a single-user server + Android reading app.
 
@@ -13,5 +13,8 @@ The design starts from the existing local repository at:
 
 `E:\Codex\Projects\boox-books-sync`
 
-See [MVP design](docs/design/mvp-design.md).
+## Authorship and AI-assisted development
 
+This project is authored and owned by the repository owner's GitHub account. Codex is used as an end-to-end engineering assistant for design, planning, implementation, testing, and documentation, but Codex is not the code author.
+
+See [MVP design](docs/design/mvp-design.md).

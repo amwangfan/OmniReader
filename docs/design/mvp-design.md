@@ -1,10 +1,10 @@
-# BOOX Books Sync Next MVP Design
+# OmniReader MVP Design
 
 Date: 2026-07-04
 
 ## 1. Background
 
-The current `amwangfan/boox-books-sync` project is a BOOX-oriented Magisk module that uses shell scripts and rclone/WebDAV-style synchronization. It works well as a device-side sync tool, but the next version should become a normal application system:
+The current `amwangfan/boox-books-sync` project is a BOOX-oriented Magisk module that uses shell scripts and rclone/WebDAV-style synchronization. It works well as a device-side sync tool, but the next version, OmniReader, should become a normal application system:
 
 - a server stores books, metadata, reading progress, and future download-plugin outputs;
 - a web admin UI manages the library and server state;
@@ -106,9 +106,9 @@ Server components:
 
 ### Web admin
 
-Start with an embedded web UI served by the Go binary.
+Start with a lightweight server-rendered web UI served by the Go binary.
 
-The UI can be implemented with a lightweight frontend stack. The key MVP constraint is operational simplicity: one server process should serve both API and web admin.
+Avoid a bundled SPA in the first version. The key MVP constraint is operational simplicity: one server process should serve both API and web admin, with minimal frontend build complexity.
 
 ### Android
 
@@ -296,8 +296,8 @@ Deferred:
 For the Aliyun experimental deployment:
 
 ```text
-/opt/boox-books-sync-next/
-  boox-server
+/opt/omnireader/
+  omnireader-server
   data/
   config.env
 ```
@@ -307,14 +307,16 @@ Operational constraints:
 - keep the binary and data directory small;
 - use SQLite and local disk;
 - no Docker dependency in MVP;
-- expose the web UI either through an SSH tunnel or a temporary authenticated HTTP port;
-- provide a single documented removal command that stops the service and removes `/opt/boox-books-sync-next`.
+- expose the web UI over HTTP on the Aliyun host's Tailscale network;
+- do not expose the MVP admin UI to the public internet unless explicitly requested later;
+- provide a single documented removal command that stops the service and removes `/opt/omnireader`.
 
 Preferred demo access:
 
 - run the service on the server;
-- open the web admin locally through SSH port forwarding when possible;
-- only expose a public port if explicitly needed.
+- open the web admin locally through the server's Tailscale HTTP address;
+- use SSH only when needed for deployment, inspection, or debugging;
+- keep SSH commands simple because shell quoting/escaping across Windows and the remote host can otherwise become fragile.
 
 ## 13. Repository layout
 
@@ -383,9 +385,19 @@ The first code slice should be deliberately narrow:
 6. Progress can be saved locally and uploaded to the server.
 7. Remote demo can run on Aliyun and be removed cleanly.
 
-## 16. Open decisions before public GitHub creation
+## 16. Authorship and repository identity
 
-- Final public repository name.
-- Whether the first remote demo should use SSH tunnel only or expose a temporary HTTP port.
-- Whether the web admin should be plain server-rendered HTML first or a bundled SPA.
+Repository and application name:
 
+- `OmniReader`
+
+Authorship:
+
+- code authorship belongs to the repository owner's GitHub account;
+- Codex must not be presented as the code author;
+- README and documentation may state that Codex was used throughout the design, planning, implementation, testing, and documentation workflow.
+
+Resolved first-version decisions:
+
+- remote demo uses HTTP over Tailscale rather than a public port;
+- first web admin uses lightweight server-rendered pages rather than a bundled SPA.
