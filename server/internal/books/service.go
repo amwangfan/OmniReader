@@ -77,21 +77,37 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
 		return Book{}, errors.New("book body is empty")
 	}
 
+	title := strings.TrimSpace(input.Title)
+	author := strings.TrimSpace(input.Author)
+	metadata, metadataErr := ParseEPUBMetadata(data)
+	if title == "" {
+		title = strings.TrimSpace(metadata.Title)
+	}
+	if author == "" {
+		author = strings.TrimSpace(metadata.Author)
+	}
+	now := s.now()
+	if title == "" {
+		title = strings.TrimSuffix(filepath.Base(input.Filename), filepath.Ext(input.Filename))
+	}
+	if title == "" {
+		title = "Untitled"
+	}
+
+	template, err := s.FilenameTemplate(ctx)
+	if err != nil {
+		return Book{}, err
+	}
 	id := newID("book")
-	storageKey := "books/" + id + "/original.epub"
+	storageKey := "books/" + id + "/" + RenderFilenameTemplate(template, title, author, now)
 	if err := s.store.Save(ctx, storageKey, bytes.NewReader(data)); err != nil {
 		return Book{}, err
 	}
 
-	title := strings.TrimSpace(input.Title)
-	if title == "" {
-		title = strings.TrimSuffix(filepath.Base(input.Filename), filepath.Ext(input.Filename))
-	}
-	now := s.now()
 	book := Book{
 		ID:         id,
 		Title:      title,
-		Author:     strings.TrimSpace(input.Author),
+		Author:     author,
 		Format:     "epub",
 		StorageKey: storageKey,
 		FileSize:   int64(len(data)),
@@ -108,6 +124,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		_ = s.store.Delete(ctx, storageKey)
 		return Book{}, fmt.Errorf("insert book: %w", err)
 	}
+	_ = metadataErr
 	return book, nil
 }
 
@@ -170,6 +187,75 @@ WHERE id = ? AND archived_at IS NULL
 `, formatTime(s.now()), formatTime(s.now()), id)
 	if err != nil {
 		return fmt.Errorf("archive book: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) Delete(ctx context.Context, id string) error {
+	book, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete book transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM reading_progress WHERE book_id = ?`, id); err != nil {
+		return fmt.Errorf("delete reading progress: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM books WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete book row: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete book: %w", err)
+	}
+	if err := s.store.Delete(ctx, book.StorageKey); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Service) FilenameTemplate(ctx context.Context) (string, error) {
+	value, err := s.setting(ctx, "filename_template")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(value) == "" {
+		return DefaultFilenameTemplate, nil
+	}
+	return value, nil
+}
+
+func (s *Service) SetFilenameTemplate(ctx context.Context, pattern string) error {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		pattern = DefaultFilenameTemplate
+	}
+	return s.setSetting(ctx, "filename_template", pattern)
+}
+
+func (s *Service) setting(ctx context.Context, key string) (string, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read setting %s: %w", key, err)
+	}
+	return value, nil
+}
+
+func (s *Service) setSetting(ctx context.Context, key string, value string) error {
+	now := formatTime(s.now())
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO settings (key, value, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+`, key, value, now)
+	if err != nil {
+		return fmt.Errorf("save setting %s: %w", key, err)
 	}
 	return nil
 }

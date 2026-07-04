@@ -80,6 +80,49 @@ func TestRefreshAndLogout(t *testing.T) {
 	}
 }
 
+func TestChangePassword(t *testing.T) {
+	ctx := context.Background()
+	conn := testDB(t, ctx)
+	service := testService(t, conn)
+	if err := service.BootstrapAdmin(ctx); err != nil {
+		t.Fatalf("BootstrapAdmin returned error: %v", err)
+	}
+	login, err := service.Login(ctx, "admin", "password", "test-client")
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+
+	if err := service.ChangePassword(ctx, login.UserID, "password", "new-password"); err != nil {
+		t.Fatalf("ChangePassword returned error: %v", err)
+	}
+	if _, err := service.Login(ctx, "admin", "password", "test-client"); err == nil {
+		t.Fatal("old password should not work")
+	}
+	if _, err := service.Login(ctx, "admin", "new-password", "test-client"); err != nil {
+		t.Fatalf("new password should work: %v", err)
+	}
+	if _, err := service.Refresh(ctx, login.RefreshToken); err == nil {
+		t.Fatal("old refresh token should be revoked")
+	}
+}
+
+func TestChangePasswordRejectsWrongCurrentPassword(t *testing.T) {
+	ctx := context.Background()
+	conn := testDB(t, ctx)
+	service := testService(t, conn)
+	if err := service.BootstrapAdmin(ctx); err != nil {
+		t.Fatalf("BootstrapAdmin returned error: %v", err)
+	}
+	login, err := service.Login(ctx, "admin", "password", "test-client")
+	if err != nil {
+		t.Fatalf("Login returned error: %v", err)
+	}
+
+	if err := service.ChangePassword(ctx, login.UserID, "wrong", "new-password"); err == nil {
+		t.Fatal("wrong current password should fail")
+	}
+}
+
 func testDB(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 	conn, err := sql.Open("sqlite", ":memory:")

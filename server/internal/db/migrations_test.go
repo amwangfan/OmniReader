@@ -17,7 +17,7 @@ func TestOpenAndMigrateCreatesCoreTables(t *testing.T) {
 	}
 	defer conn.Close()
 
-	for _, table := range []string{"users", "sessions", "books", "devices", "reading_progress", "schema_migrations"} {
+	for _, table := range []string{"users", "sessions", "books", "devices", "reading_progress", "settings", "schema_migrations"} {
 		if !tableExists(t, conn, table) {
 			t.Fatalf("expected table %q to exist", table)
 		}

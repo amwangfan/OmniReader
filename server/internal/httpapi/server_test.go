@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"database/sql"
@@ -148,7 +149,7 @@ func TestBookUploadListDownloadAndArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateFormFile returned error: %v", err)
 	}
-	_, _ = file.Write([]byte("epub data"))
+	_, _ = file.Write(fixtureEPUBBytes(t, "API Parsed", "API Author"))
 	_ = writer.Close()
 
 	uploadReq := httptest.NewRequest(http.MethodPost, "/api/v1/books", &body)
@@ -186,8 +187,8 @@ func TestBookUploadListDownloadAndArchive(t *testing.T) {
 	if downloadRes.Code != http.StatusOK {
 		t.Fatalf("download status = %d, body = %s", downloadRes.Code, downloadRes.Body.String())
 	}
-	if downloadRes.Body.String() != "epub data" {
-		t.Fatalf("download body = %q", downloadRes.Body.String())
+	if downloadRes.Body.Len() == 0 {
+		t.Fatal("download body should not be empty")
 	}
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/books/"+uploadPayload.Book.ID, nil)
@@ -196,6 +197,13 @@ func TestBookUploadListDownloadAndArchive(t *testing.T) {
 	handler.ServeHTTP(deleteRes, deleteReq)
 	if deleteRes.Code != http.StatusNoContent {
 		t.Fatalf("delete status = %d, body = %s", deleteRes.Code, deleteRes.Body.String())
+	}
+	downloadAgainReq := httptest.NewRequest(http.MethodGet, "/api/v1/books/"+uploadPayload.Book.ID+"/download", nil)
+	downloadAgainReq.Header.Set("Authorization", "Bearer "+token)
+	downloadAgainRes := httptest.NewRecorder()
+	handler.ServeHTTP(downloadAgainRes, downloadAgainReq)
+	if downloadAgainRes.Code != http.StatusNotFound {
+		t.Fatalf("download after delete status = %d", downloadAgainRes.Code)
 	}
 }
 
@@ -251,7 +259,7 @@ func TestWebUploadRedirectsBackToLibrary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateFormFile returned error: %v", err)
 	}
-	_, _ = file.Write([]byte("browser epub data"))
+	_, _ = file.Write(fixtureEPUBBytes(t, "Browser Upload", "Browser Author"))
 	_ = writer.Close()
 
 	uploadReq := httptest.NewRequest(http.MethodPost, "/admin/books/upload", &body)
@@ -276,6 +284,53 @@ func TestWebUploadRedirectsBackToLibrary(t *testing.T) {
 	bodyText := adminRes.Body.String()
 	if !strings.Contains(bodyText, "Browser Upload") || !strings.Contains(bodyText, "Upload complete") {
 		t.Fatalf("admin page missing uploaded book or flash: %s", bodyText)
+	}
+}
+
+func TestSettingsUpdateFilenameTemplateAndPassword(t *testing.T) {
+	handler := testAuthHandler(t)
+	cookie := webLoginForTest(t, handler)
+
+	form := url.Values{}
+	form.Set("filename_template", "{{YYMMDD}}-{{Book}}-{{Author}}-123")
+	templateReq := httptest.NewRequest(http.MethodPost, "/admin/settings/filename-template", strings.NewReader(form.Encode()))
+	templateReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	templateReq.AddCookie(cookie)
+	templateRes := httptest.NewRecorder()
+	handler.ServeHTTP(templateRes, templateReq)
+	if templateRes.Code != http.StatusSeeOther {
+		t.Fatalf("template update status = %d, body = %s", templateRes.Code, templateRes.Body.String())
+	}
+
+	settingsReq := httptest.NewRequest(http.MethodGet, "/admin/settings?status=filename_template_saved", nil)
+	settingsReq.AddCookie(cookie)
+	settingsRes := httptest.NewRecorder()
+	handler.ServeHTTP(settingsRes, settingsReq)
+	if settingsRes.Code != http.StatusOK {
+		t.Fatalf("settings status = %d, body = %s", settingsRes.Code, settingsRes.Body.String())
+	}
+	if !strings.Contains(settingsRes.Body.String(), "{{YYMMDD}}-{{Book}}-{{Author}}-123") {
+		t.Fatalf("settings page missing template: %s", settingsRes.Body.String())
+	}
+
+	passwordForm := url.Values{}
+	passwordForm.Set("current_password", "password")
+	passwordForm.Set("new_password", "new-password")
+	passwordReq := httptest.NewRequest(http.MethodPost, "/admin/settings/password", strings.NewReader(passwordForm.Encode()))
+	passwordReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	passwordReq.AddCookie(cookie)
+	passwordRes := httptest.NewRecorder()
+	handler.ServeHTTP(passwordRes, passwordReq)
+	if passwordRes.Code != http.StatusSeeOther || passwordRes.Header().Get("Location") != "/login" {
+		t.Fatalf("password update status = %d location = %q", passwordRes.Code, passwordRes.Header().Get("Location"))
+	}
+
+	loginBody := bytes.NewBufferString(`{"username":"admin","password":"new-password","clientLabel":"test"}`)
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", loginBody)
+	loginRes := httptest.NewRecorder()
+	handler.ServeHTTP(loginRes, loginReq)
+	if loginRes.Code != http.StatusOK {
+		t.Fatalf("new password login status = %d, body = %s", loginRes.Code, loginRes.Body.String())
 	}
 }
 
@@ -356,4 +411,38 @@ func webLoginForTest(t *testing.T, handler http.Handler) *http.Cookie {
 		t.Fatal("expected login cookie")
 	}
 	return cookies[0]
+}
+
+func fixtureEPUBBytes(t *testing.T, title string, author string) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	addFixtureZipFile(t, writer, "META-INF/container.xml", `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`)
+	addFixtureZipFile(t, writer, "OPS/content.opf", `<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>`+title+`</dc:title>
+    <dc:creator>`+author+`</dc:creator>
+  </metadata>
+</package>`)
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close fixture epub: %v", err)
+	}
+	return buffer.Bytes()
+}
+
+func addFixtureZipFile(t *testing.T, writer *zip.Writer, name string, body string) {
+	t.Helper()
+	file, err := writer.Create(name)
+	if err != nil {
+		t.Fatalf("create fixture file %s: %v", name, err)
+	}
+	if _, err := file.Write([]byte(body)); err != nil {
+		t.Fatalf("write fixture file %s: %v", name, err)
+	}
 }

@@ -19,6 +19,8 @@ This project is authored and owned by the repository owner's GitHub account. Cod
 
 See [MVP design](docs/design/mvp-design.md).
 
+Android client source lives in [`android/`](android/). It is a native Kotlin + Jetpack Compose APK targeting the first usable OmniReader app flow.
+
 ## Local development
 
 Server commands, once Go 1.25 or newer is installed locally:
@@ -32,3 +34,12 @@ go run ./cmd/omnireader-server
 ```
 
 The default server data directory is `server\data`, and runtime data is intentionally ignored by Git.
+
+Current server MVP features:
+
+- login-protected web admin;
+- EPUB upload with automatic title/author extraction from EPUB metadata;
+- configurable saved filename pattern such as `{{YYMMDD}}-{{Book}}-{{Author}}-123`;
+- authenticated book list and download APIs;
+- server-side book deletion;
+- admin password change from the settings page.

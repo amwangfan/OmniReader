@@ -142,6 +142,48 @@ VALUES (?, ?, ?, ?, ?, ?)
 	}, nil
 }
 
+func (s *Service) ChangePassword(ctx context.Context, userID string, currentPassword string, newPassword string) error {
+	if strings.TrimSpace(newPassword) == "" {
+		return errors.New("new password is required")
+	}
+	if len(newPassword) < 8 {
+		return errors.New("new password must be at least 8 characters")
+	}
+
+	var passwordHash string
+	err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&passwordHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("user not found")
+	}
+	if err != nil {
+		return fmt.Errorf("find user password: %w", err)
+	}
+	if !VerifyPassword(passwordHash, currentPassword) {
+		return errors.New("current password is incorrect")
+	}
+
+	newHash, err := HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("hash new password: %w", err)
+	}
+	now := s.now().Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin password change: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, newHash, now, userID); err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, userID); err != nil {
+		return fmt.Errorf("revoke sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit password change: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (RefreshResult, error) {
 	refreshHash := HashRefreshToken(refreshToken)
 

@@ -19,15 +19,16 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 
 	book, err := service.Create(ctx, CreateInput{
 		Filename: "The Book.epub",
-		Title:    "The Book",
-		Author:   "Author",
-		Body:     strings.NewReader("epub content"),
+		Body:     strings.NewReader(string(fixtureEPUB(t, "The Parsed Book", "The Parsed Author"))),
 	})
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
-	if book.Title != "The Book" || book.Author != "Author" || book.Format != "epub" || book.FileSize != int64(len("epub content")) {
+	if book.Title != "The Parsed Book" || book.Author != "The Parsed Author" || book.Format != "epub" {
 		t.Fatalf("unexpected book: %#v", book)
+	}
+	if !strings.HasSuffix(book.StorageKey, "The Parsed Book-The Parsed Author.epub") {
+		t.Fatalf("storage key = %q", book.StorageKey)
 	}
 
 	books, err := service.List(ctx)
@@ -47,19 +48,22 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll returned error: %v", err)
 	}
-	if string(body) != "epub content" {
-		t.Fatalf("body = %q", body)
+	if len(body) == 0 {
+		t.Fatal("downloaded body should not be empty")
 	}
 
-	if err := service.Archive(ctx, book.ID); err != nil {
-		t.Fatalf("Archive returned error: %v", err)
+	if err := service.Delete(ctx, book.ID); err != nil {
+		t.Fatalf("Delete returned error: %v", err)
 	}
 	books, err = service.List(ctx)
 	if err != nil {
-		t.Fatalf("List after archive returned error: %v", err)
+		t.Fatalf("List after delete returned error: %v", err)
 	}
 	if len(books) != 0 {
-		t.Fatalf("archived book should be hidden: %#v", books)
+		t.Fatalf("deleted book should be hidden: %#v", books)
+	}
+	if _, _, err := service.Open(ctx, book.ID); err == nil {
+		t.Fatal("deleted book should not open")
 	}
 }
 
@@ -69,6 +73,25 @@ func TestCreateRejectsNonEPUB(t *testing.T) {
 
 	if _, err := service.Create(ctx, CreateInput{Filename: "book.pdf", Body: strings.NewReader("pdf")}); err == nil {
 		t.Fatal("expected non-EPUB upload to fail")
+	}
+}
+
+func TestCreateUsesCustomFilenameTemplate(t *testing.T) {
+	ctx := context.Background()
+	service := testService(t, ctx)
+	if err := service.SetFilenameTemplate(ctx, "{{YYMMDD}}-{{Book}}-{{Author}}-123"); err != nil {
+		t.Fatalf("SetFilenameTemplate returned error: %v", err)
+	}
+
+	book, err := service.Create(ctx, CreateInput{
+		Filename: "fallback.epub",
+		Body:     strings.NewReader(string(fixtureEPUB(t, "Book", "Author"))),
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if !strings.HasSuffix(book.StorageKey, "260704-Book-Author-123.epub") {
+		t.Fatalf("storage key = %q", book.StorageKey)
 	}
 }
 

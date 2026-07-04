@@ -74,6 +74,17 @@ CREATE TABLE IF NOT EXISTS reading_progress (
 );
 `,
 	},
+	{
+		Version: 2,
+		Name:    "settings",
+		SQL: `
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`,
+	},
 }
 
 func OpenAndMigrate(ctx context.Context, databasePath string) (*sql.DB, error) {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 
@@ -43,7 +44,10 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("DELETE /api/v1/books/{bookID}", archiveBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("GET /admin/books", booksPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/books/upload", webUploadBook(opts.AuthService, opts.BookService))
-		mux.HandleFunc("POST /admin/books/{bookID}/archive", webArchiveBook(opts.AuthService, opts.BookService))
+		mux.HandleFunc("POST /admin/books/{bookID}/delete", webDeleteBook(opts.AuthService, opts.BookService))
+		mux.HandleFunc("GET /admin/settings", settingsPage(opts.AuthService, opts.BookService))
+		mux.HandleFunc("POST /admin/settings/filename-template", updateFilenameTemplate(opts.AuthService, opts.BookService))
+		mux.HandleFunc("POST /admin/settings/password", updatePassword(opts.AuthService))
 	}
 	return mux
 }
@@ -245,7 +249,7 @@ func downloadBook(authService *auth.Service, bookService *books.Service) http.Ha
 		defer reader.Close()
 
 		w.Header().Set("Content-Type", "application/epub+zip")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+safeFilename(book.Title)+`.epub"`)
+		w.Header().Set("Content-Disposition", `attachment; filename="`+safeFilename(path.Base(book.StorageKey))+`"`)
 		w.Header().Set("X-OmniReader-Book-ID", book.ID)
 		if _, err := io.Copy(w, reader); err != nil && !errors.Is(err, http.ErrAbortHandler) {
 			return
@@ -258,8 +262,8 @@ func archiveBook(authService *auth.Service, bookService *books.Service) http.Han
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		if err := bookService.Archive(r.Context(), r.PathValue("bookID")); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "archive_failed"})
+		if err := bookService.Delete(r.Context(), r.PathValue("bookID")); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "delete_failed"})
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -441,6 +445,7 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       <p class="eyebrow">Personal library sync</p>
       <h1>OmniReader</h1>
       <p class="subtitle">Upload EPUBs here, then let Android clients pull the library and reading progress from this server.</p>
+      <p class="subtitle"><a href="/admin/settings">Settings</a></p>
     </section>
     <aside class="stat">
       <strong>{{len .Books}}</strong>
@@ -474,8 +479,8 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
         </div>
         <div class="actions">
           <a class="button secondary" href="/api/v1/books/{{.ID}}/download">Download</a>
-          <form method="post" action="/admin/books/{{.ID}}/archive">
-            <button class="danger" type="submit">Archive</button>
+          <form method="post" action="/admin/books/{{.ID}}/delete" onsubmit="return confirm('Delete this book from the server? This removes the saved EPUB file.');">
+            <button class="danger" type="submit">Delete</button>
           </form>
         </div>
       </article>
@@ -519,16 +524,121 @@ func webUploadBook(authService *auth.Service, bookService *books.Service) http.H
 	}
 }
 
-func webArchiveBook(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+func webDeleteBook(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		if err := bookService.Archive(r.Context(), r.PathValue("bookID")); err != nil {
-			http.Redirect(w, r, "/admin/books?error="+url.QueryEscape("archive failed"), http.StatusSeeOther)
+		if err := bookService.Delete(r.Context(), r.PathValue("bookID")); err != nil {
+			http.Redirect(w, r, "/admin/books?error="+url.QueryEscape("delete failed"), http.StatusSeeOther)
 			return
 		}
-		http.Redirect(w, r, "/admin/books?status=archived", http.StatusSeeOther)
+		http.Redirect(w, r, "/admin/books?status=deleted", http.StatusSeeOther)
+	}
+}
+
+func settingsPage(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+	page := template.Must(template.New("settings").Parse(`<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OmniReader Settings</title>
+  <style>
+    body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, sans-serif; color: #252018; background: linear-gradient(135deg,#fbf7ef,#f1e5d2); }
+    main { max-width: 880px; margin: 0 auto; padding: 44px 24px; }
+    a { color: #1f6f5b; }
+    h1 { font-family: ui-serif, Georgia, serif; font-size: clamp(34px, 5vw, 56px); margin: 0 0 10px; letter-spacing: -.04em; }
+    .subtitle { color: #776b5d; margin: 0 0 26px; line-height: 1.7; }
+    .panel { border: 1px solid rgba(81,62,38,.14); border-radius: 28px; background: rgba(255,252,246,.9); box-shadow: 0 18px 60px rgba(52,38,21,.12); padding: 24px; margin: 18px 0; }
+    label { display: block; margin: 14px 0 7px; color: #776b5d; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+    input { width: 100%; border: 1px solid rgba(81,62,38,.14); border-radius: 16px; padding: 12px 13px; background: rgba(255,255,255,.75); font: 15px ui-sans-serif, system-ui, sans-serif; }
+    button { border: 0; border-radius: 999px; padding: 11px 16px; background: #7a4f2a; color: #fff; cursor: pointer; font-weight: 800; margin-top: 14px; }
+    code { background: rgba(31,111,91,.10); padding: 2px 5px; border-radius: 6px; }
+    .flash { border-radius: 18px; padding: 13px 16px; margin: 0 0 18px; background: rgba(31,111,91,.12); color: #1f6f5b; }
+    .flash.error { background: rgba(155,47,47,.10); color: #9b2f2f; }
+  </style>
+</head>
+<body>
+  <main>
+    <p><a href="/admin/books">← Back to library</a></p>
+    <h1>Settings</h1>
+    <p class="subtitle">Tune how OmniReader stores uploaded EPUB files and rotate the single-user admin password.</p>
+    {{if .Flash}}<div class="flash {{.FlashKind}}">{{.Flash}}</div>{{end}}
+    <section class="panel">
+      <h2>Saved filename pattern</h2>
+      <p class="subtitle">Available tokens: <code>{{"{{Book}}"}}</code>, <code>{{"{{Author}}"}}</code>, <code>{{"{{YYMMDD}}"}}</code>, <code>{{"{{YYYYMMDD}}"}}</code>. The <code>.epub</code> suffix is added automatically when omitted.</p>
+      <form method="post" action="/admin/settings/filename-template">
+        <label for="filename_template">Pattern</label>
+        <input id="filename_template" name="filename_template" value="{{.FilenameTemplate}}" placeholder="{{"{{Book}}-{{Author}}.epub"}}">
+        <button type="submit">Save filename pattern</button>
+      </form>
+    </section>
+    <section class="panel">
+      <h2>Change password</h2>
+      <form method="post" action="/admin/settings/password">
+        <label for="current_password">Current password</label>
+        <input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
+        <label for="new_password">New password</label>
+        <input id="new_password" name="new_password" type="password" autocomplete="new-password" minlength="8" required>
+        <button type="submit">Change password</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>`))
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		pattern, err := bookService.FilenameTemplate(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "settings_failed"})
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = page.Execute(w, map[string]any{
+			"FilenameTemplate": pattern,
+			"Flash":            settingsFlashMessage(r.URL.Query().Get("status"), r.URL.Query().Get("error")),
+			"FlashKind":        flashKind(r.URL.Query().Get("error")),
+		})
+	}
+}
+
+func updateFilenameTemplate(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Redirect(w, r, "/admin/settings?error="+url.QueryEscape("invalid form"), http.StatusSeeOther)
+			return
+		}
+		if err := bookService.SetFilenameTemplate(r.Context(), r.FormValue("filename_template")); err != nil {
+			http.Redirect(w, r, "/admin/settings?error="+url.QueryEscape("save failed"), http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/admin/settings?status=filename_template_saved", http.StatusSeeOther)
+	}
+}
+
+func updatePassword(authService *auth.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, ok := requireUser(w, r, authService)
+		if !ok {
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Redirect(w, r, "/admin/settings?error="+url.QueryEscape("invalid form"), http.StatusSeeOther)
+			return
+		}
+		if err := authService.ChangePassword(r.Context(), user.ID, r.FormValue("current_password"), r.FormValue("new_password")); err != nil {
+			http.Redirect(w, r, "/admin/settings?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "omnireader_access", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	}
 }
 
@@ -592,6 +702,20 @@ func flashMessage(status string, err string) string {
 		return "Upload complete. The EPUB is now in your library."
 	case "archived":
 		return "Book archived. Existing client copies are not deleted automatically."
+	case "deleted":
+		return "Book deleted from the server."
+	default:
+		return ""
+	}
+}
+
+func settingsFlashMessage(status string, err string) string {
+	if err != "" {
+		return err
+	}
+	switch status {
+	case "filename_template_saved":
+		return "Filename pattern saved. New uploads will use it."
 	default:
 		return ""
 	}
