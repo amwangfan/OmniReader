@@ -1,0 +1,17 @@
+# BOOX Books Sync Next
+
+Experimental rewrite of `amwangfan/boox-books-sync` from a Magisk/rclone based BOOX sync module into a single-user server + Android reading app.
+
+The first version targets:
+
+- a lightweight self-hosted server for book storage, progress sync, web administration, and future downloader/plugin integration;
+- a native Android app for BOOX and other Android devices, using Kotlin and Jetpack Compose;
+- EPUB-first reading and synchronization;
+- local filesystem storage first, with an interface reserved for OSS/S3-compatible backends.
+
+The design starts from the existing local repository at:
+
+`E:\Codex\Projects\boox-books-sync`
+
+See [MVP design](docs/design/mvp-design.md).
+
