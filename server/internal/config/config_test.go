@@ -57,4 +57,3 @@ func TestLoadIgnoresBlankOverrides(t *testing.T) {
 		t.Fatalf("addr = %q, want default %q", cfg.Addr, DefaultAddr)
 	}
 }
-

@@ -29,4 +29,3 @@ func TestHealthz(t *testing.T) {
 		t.Fatalf("unexpected body: %#v", body)
 	}
 }
-

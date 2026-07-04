@@ -61,4 +61,3 @@ func tableExists(t *testing.T, conn *sql.DB, table string) bool {
 	}
 	return name == table
 }
-

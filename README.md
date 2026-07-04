@@ -21,7 +21,7 @@ See [MVP design](docs/design/mvp-design.md).
 
 ## Local development
 
-Server commands, once Go is installed locally:
+Server commands, once Go 1.25 or newer is installed locally:
 
 ```powershell
 cd E:\Codex\Projects\OmniReader\server

@@ -178,4 +178,3 @@ func ensureParentDir(databasePath string) error {
 	}
 	return nil
 }
-

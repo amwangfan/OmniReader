@@ -44,4 +44,3 @@ func valueOrDefault(lookup func(string) (string, bool), key string, fallback str
 	}
 	return value
 }
-
