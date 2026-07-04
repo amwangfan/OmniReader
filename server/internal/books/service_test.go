@@ -95,6 +95,54 @@ func TestCreateUsesCustomFilenameTemplate(t *testing.T) {
 	}
 }
 
+func TestUpdateDetailsRenamesStoredFile(t *testing.T) {
+	ctx := context.Background()
+	service := testService(t, ctx)
+	book, err := service.Create(ctx, CreateInput{
+		Filename: "fallback.epub",
+		Body:     strings.NewReader(string(fixtureEPUB(t, "Old Title", "Old Author"))),
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	updated, err := service.UpdateDetails(ctx, book.ID, UpdateInput{
+		Title:    "New Title",
+		Author:   "New Author",
+		Filename: "custom-name",
+	})
+	if err != nil {
+		t.Fatalf("UpdateDetails returned error: %v", err)
+	}
+	if updated.Title != "New Title" || updated.Author != "New Author" || updated.Filename != "custom-name.epub" {
+		t.Fatalf("unexpected updated book: %#v", updated)
+	}
+	if !strings.HasSuffix(updated.StorageKey, "/custom-name.epub") {
+		t.Fatalf("storage key = %q", updated.StorageKey)
+	}
+	_, reader, err := service.Open(ctx, book.ID)
+	if err != nil {
+		t.Fatalf("renamed book should open: %v", err)
+	}
+	_ = reader.Close()
+}
+
+func TestUpdateDetailsRequiresTitle(t *testing.T) {
+	ctx := context.Background()
+	service := testService(t, ctx)
+	book, err := service.Create(ctx, CreateInput{
+		Filename: "fallback.epub",
+		Body:     strings.NewReader(string(fixtureEPUB(t, "Title", "Author"))),
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	if _, err := service.UpdateDetails(ctx, book.ID, UpdateInput{Title: "   "}); err == nil {
+		t.Fatal("expected blank title to fail")
+	}
+}
+
 func testService(t *testing.T, ctx context.Context) *Service {
 	t.Helper()
 	conn, err := sql.Open("sqlite", ":memory:")

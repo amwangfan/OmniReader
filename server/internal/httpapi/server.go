@@ -38,6 +38,7 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("POST /login", webLogin(opts.AuthService))
 	}
 	if opts.AuthService != nil && opts.BookService != nil {
+		mux.HandleFunc("GET /admin", adminHome)
 		mux.HandleFunc("GET /api/v1/books", listBooks(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /api/v1/books", uploadBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("GET /api/v1/books/{bookID}/download", downloadBook(opts.AuthService, opts.BookService))
@@ -45,11 +46,18 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("GET /admin/books", booksPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/books/upload", webUploadBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/books/{bookID}/delete", webDeleteBook(opts.AuthService, opts.BookService))
+		mux.HandleFunc("GET /admin/novels", novelsPage(opts.AuthService, opts.BookService))
+		mux.HandleFunc("POST /admin/novels/{bookID}", updateNovel(opts.AuthService, opts.BookService))
+		mux.HandleFunc("GET /admin/sync", syncPage(opts.AuthService))
 		mux.HandleFunc("GET /admin/settings", settingsPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/filename-template", updateFilenameTemplate(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/password", updatePassword(opts.AuthService))
 	}
 	return mux
+}
+
+func adminHome(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/admin/books", http.StatusSeeOther)
 }
 
 func healthz(info BuildInfo) http.HandlerFunc {
@@ -511,6 +519,26 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       max-width: 620px;
       font: 15px/1.7 ui-sans-serif, system-ui, sans-serif;
     }
+    .nav {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+    .nav a {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 12px;
+      color: var(--muted);
+      background: rgba(255,255,255,.46);
+      text-decoration: none;
+      font: 700 13px ui-sans-serif, system-ui, sans-serif;
+    }
+    .nav a.active {
+      color: #fff;
+      background: var(--accent);
+      border-color: transparent;
+    }
     .stat {
       min-width: 132px;
       border: 1px solid var(--line);
@@ -626,7 +654,12 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       <p class="eyebrow">Personal library sync</p>
       <h1>OmniReader</h1>
       <p class="subtitle">Upload EPUBs here, then let Android clients pull the library and reading progress from this server.</p>
-      <p class="subtitle"><a href="/admin/settings">Settings</a></p>
+      <nav class="nav" aria-label="Admin navigation">
+        <a class="active" href="/admin/books">&#20027;&#39029;</a>
+        <a href="/admin/novels">&#23567;&#35828;&#31649;&#29702;</a>
+        <a href="/admin/sync">&#21516;&#27493;</a>
+        <a href="/admin/settings">&#35774;&#32622;</a>
+      </nav>
     </section>
     <aside class="stat">
       <strong>{{len .Books}}</strong>
@@ -656,7 +689,7 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       <article class="book">
         <div>
           <h3 class="book-title">{{.Title}}</h3>
-          <p class="meta">{{if .Author}}{{.Author}} · {{end}}{{formatBytes .FileSize}} · {{.Format}}</p>
+          <p class="meta">{{if .Author}}{{.Author}} &middot; {{end}}{{formatBytes .FileSize}} &middot; {{.Format}}</p>
         </div>
         <div class="actions">
           <a class="button secondary" href="/api/v1/books/{{.ID}}/download">Download</a>
@@ -718,6 +751,177 @@ func webDeleteBook(authService *auth.Service, bookService *books.Service) http.H
 	}
 }
 
+func novelsPage(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+	page := template.Must(template.New("novels").Funcs(template.FuncMap{
+		"formatBytes": formatBytes,
+	}).Parse(`<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OmniReader Novel Management</title>
+  <style>
+    body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, sans-serif; color: #252018; background: linear-gradient(135deg,#fbf7ef,#f1e5d2); }
+    main { max-width: 1120px; margin: 0 auto; padding: 44px 24px; }
+    a { color: #1f6f5b; }
+    h1 { font-family: ui-serif, Georgia, "Noto Serif SC", serif; font-size: clamp(34px, 5vw, 56px); margin: 0 0 10px; letter-spacing: -.04em; }
+    .subtitle { color: #776b5d; margin: 0 0 22px; line-height: 1.7; }
+    .nav { display: flex; gap: 10px; flex-wrap: wrap; margin: 18px 0 24px; }
+    .nav a { border: 1px solid rgba(81,62,38,.14); border-radius: 999px; padding: 8px 12px; color: #776b5d; background: rgba(255,255,255,.46); text-decoration: none; font-size: 13px; font-weight: 800; }
+    .nav a.active { color: #fff; background: #7a4f2a; border-color: transparent; }
+    .panel { border: 1px solid rgba(81,62,38,.14); border-radius: 28px; background: rgba(255,252,246,.9); box-shadow: 0 18px 60px rgba(52,38,21,.12); padding: 20px; margin: 18px 0; overflow-x: auto; }
+    .flash { border-radius: 18px; padding: 13px 16px; margin: 0 0 18px; background: rgba(31,111,91,.12); color: #1f6f5b; }
+    .flash.error { background: rgba(155,47,47,.10); color: #9b2f2f; }
+    table { width: 100%; border-collapse: collapse; min-width: 860px; }
+    th { color: #776b5d; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; text-align: left; padding: 10px; border-bottom: 1px solid rgba(81,62,38,.14); }
+    td { padding: 12px 10px; border-bottom: 1px solid rgba(81,62,38,.10); vertical-align: top; }
+    input { width: 100%; border: 1px solid rgba(81,62,38,.14); border-radius: 12px; padding: 10px 11px; background: rgba(255,255,255,.75); color: #252018; font: 14px ui-sans-serif, system-ui, sans-serif; }
+    button { border: 0; border-radius: 999px; padding: 10px 13px; background: #7a4f2a; color: #fff; cursor: pointer; font-weight: 800; white-space: nowrap; }
+    .muted { color: #776b5d; font-size: 13px; line-height: 1.6; }
+    .empty { padding: 28px; text-align: center; color: #776b5d; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>&#23567;&#35828;&#31649;&#29702;</h1>
+    <p class="subtitle">&#32500;&#25252;&#26381;&#21153;&#22120;&#20445;&#23384;&#30340; EPUB &#25991;&#20214;&#21517;&#12289;&#23567;&#35828;&#21517;&#12289;&#20316;&#32773;&#31561;&#20449;&#24687;&#12290;&#20869;&#23481;&#32534;&#36753;&#20250;&#25918;&#22312;&#36825;&#37324;&#32487;&#32493;&#25193;&#23637;&#12290;</p>
+    <nav class="nav" aria-label="Admin navigation">
+      <a href="/admin/books">&#20027;&#39029;</a>
+      <a class="active" href="/admin/novels">&#23567;&#35828;&#31649;&#29702;</a>
+      <a href="/admin/sync">&#21516;&#27493;</a>
+      <a href="/admin/settings">&#35774;&#32622;</a>
+    </nav>
+    {{if .Flash}}<div class="flash {{.FlashKind}}">{{.Flash}}</div>{{end}}
+    <section class="panel">
+      {{if .Books}}
+      <table>
+        <thead>
+          <tr>
+            <th>&#23567;&#35828;&#21517;</th>
+            <th>&#20316;&#32773;</th>
+            <th>&#20445;&#23384;&#25991;&#20214;&#21517;</th>
+            <th>&#20449;&#24687;</th>
+            <th>&#25805;&#20316;</th>
+          </tr>
+        </thead>
+        <tbody>
+        {{range .Books}}
+          <tr>
+            <form method="post" action="/admin/novels/{{.ID}}">
+              <td><input name="title" value="{{.Title}}" required></td>
+              <td><input name="author" value="{{.Author}}" placeholder="Unknown"></td>
+              <td><input name="filename" value="{{.Filename}}" required></td>
+              <td class="muted">{{formatBytes .FileSize}}<br>{{.Format}}<br>{{.ID}}</td>
+              <td><button type="submit">&#20445;&#23384;</button></td>
+            </form>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="empty">&#36824;&#27809;&#26377;&#21487;&#31649;&#29702;&#30340;&#23567;&#35828;&#12290;&#20808;&#22238;&#20027;&#39029;&#19978;&#20256;&#19968;&#26412; EPUB&#12290;</div>
+      {{end}}
+    </section>
+    <section class="panel">
+      <h2>&#20869;&#23481;&#20462;&#25913;&#39044;&#30041;</h2>
+      <p class="muted">&#21518;&#32493;&#21487;&#20197;&#22312;&#36825;&#37324;&#22686;&#21152; EPUB &#20869;&#37096; OPF &#20803;&#25968;&#25454;&#22238;&#20889;&#12289;&#31456;&#33410; HTML &#20462;&#35746;&#12289;&#23553;&#38754;&#26367;&#25442;&#31561;&#21151;&#33021;&#12290;&#24403;&#21069;&#29256;&#26412;&#21482;&#32500;&#25252;&#26381;&#21153;&#22120;&#25968;&#25454;&#24211;&#21644;&#20445;&#23384;&#25991;&#20214;&#21517;&#65292;&#19981;&#30452;&#25509;&#25913;&#20889; EPUB &#20869;&#23481;&#12290;</p>
+    </section>
+  </main>
+</body>
+</html>`))
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		result, err := bookService.List(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_books_failed"})
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = page.Execute(w, map[string]any{
+			"Books":     result,
+			"Flash":     managementFlashMessage(r.URL.Query().Get("status"), r.URL.Query().Get("error")),
+			"FlashKind": flashKind(r.URL.Query().Get("error")),
+		})
+	}
+}
+
+func updateNovel(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Redirect(w, r, "/admin/novels?error="+url.QueryEscape("invalid form"), http.StatusSeeOther)
+			return
+		}
+		if _, err := bookService.UpdateDetails(r.Context(), r.PathValue("bookID"), books.UpdateInput{
+			Title:    r.FormValue("title"),
+			Author:   r.FormValue("author"),
+			Filename: r.FormValue("filename"),
+		}); err != nil {
+			http.Redirect(w, r, "/admin/novels?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/admin/novels?status=saved", http.StatusSeeOther)
+	}
+}
+
+func syncPage(authService *auth.Service) http.HandlerFunc {
+	page := template.Must(template.New("sync").Parse(`<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OmniReader Sync</title>
+  <style>
+    body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, sans-serif; color: #252018; background: linear-gradient(135deg,#fbf7ef,#f1e5d2); }
+    main { max-width: 980px; margin: 0 auto; padding: 44px 24px; }
+    h1 { font-family: ui-serif, Georgia, "Noto Serif SC", serif; font-size: clamp(34px, 5vw, 56px); margin: 0 0 10px; letter-spacing: -.04em; }
+    .subtitle, .muted { color: #776b5d; line-height: 1.7; }
+    .nav { display: flex; gap: 10px; flex-wrap: wrap; margin: 18px 0 24px; }
+    .nav a { border: 1px solid rgba(81,62,38,.14); border-radius: 999px; padding: 8px 12px; color: #776b5d; background: rgba(255,255,255,.46); text-decoration: none; font-size: 13px; font-weight: 800; }
+    .nav a.active { color: #fff; background: #7a4f2a; border-color: transparent; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 16px; }
+    .panel { border: 1px solid rgba(81,62,38,.14); border-radius: 28px; background: rgba(255,252,246,.9); box-shadow: 0 18px 60px rgba(52,38,21,.12); padding: 22px; }
+    .num { font-size: 38px; font-weight: 900; margin: 0; color: #7a4f2a; }
+    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>&#21516;&#27493;</h1>
+    <p class="subtitle">&#36825;&#37324;&#20316;&#20026; Android &#23458;&#25143;&#31471;&#12289;&#38405;&#35835;&#36827;&#24230;&#12289;&#19979;&#36733;&#25554;&#20214;&#21516;&#27493;&#29366;&#24577;&#30340;&#20837;&#21475;&#12290;&#24403;&#21069;&#20808;&#24314;&#31435;&#39029;&#38754;&#19982;&#23548;&#33322;&#22522;&#30784;&#12290;</p>
+    <nav class="nav" aria-label="Admin navigation">
+      <a href="/admin/books">&#20027;&#39029;</a>
+      <a href="/admin/novels">&#23567;&#35828;&#31649;&#29702;</a>
+      <a class="active" href="/admin/sync">&#21516;&#27493;</a>
+      <a href="/admin/settings">&#35774;&#32622;</a>
+    </nav>
+    <section class="grid">
+      <article class="panel"><p class="num">0</p><p class="muted">&#24050;&#27880;&#20876;&#35774;&#22791;</p></article>
+      <article class="panel"><p class="num">0</p><p class="muted">&#24453;&#21516;&#27493;&#20219;&#21153;</p></article>
+      <article class="panel"><p class="num">0</p><p class="muted">&#19979;&#36733;&#25554;&#20214;</p></article>
+    </section>
+    <section class="panel" style="margin-top: 16px;">
+      <h2>&#21518;&#32493;&#21516;&#27493;&#33021;&#21147;</h2>
+      <p class="muted">&#36825;&#37324;&#20250;&#25215;&#36733;&#35774;&#22791; last seen&#12289;&#20070;&#31821;&#25289;&#21462;&#38431;&#21015;&#12289;&#38405;&#35835;&#36827;&#24230;&#20914;&#31361;&#25552;&#31034;&#12289;&#25554;&#20214;&#19979;&#36733;&#35760;&#24405;&#31561;&#21151;&#33021;&#12290;</p>
+    </section>
+  </main>
+</body>
+</html>`))
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = page.Execute(w, nil)
+	}
+}
+
 func settingsPage(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
 	page := template.Must(template.New("settings").Parse(`<!doctype html>
 <html lang="zh-CN">
@@ -731,6 +935,9 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
     a { color: #1f6f5b; }
     h1 { font-family: ui-serif, Georgia, serif; font-size: clamp(34px, 5vw, 56px); margin: 0 0 10px; letter-spacing: -.04em; }
     .subtitle { color: #776b5d; margin: 0 0 26px; line-height: 1.7; }
+    .nav { display: flex; gap: 10px; flex-wrap: wrap; margin: 18px 0 24px; }
+    .nav a { border: 1px solid rgba(81,62,38,.14); border-radius: 999px; padding: 8px 12px; color: #776b5d; background: rgba(255,255,255,.46); text-decoration: none; font-size: 13px; font-weight: 800; }
+    .nav a.active { color: #fff; background: #7a4f2a; border-color: transparent; }
     .panel { border: 1px solid rgba(81,62,38,.14); border-radius: 28px; background: rgba(255,252,246,.9); box-shadow: 0 18px 60px rgba(52,38,21,.12); padding: 24px; margin: 18px 0; }
     label { display: block; margin: 14px 0 7px; color: #776b5d; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
     input { width: 100%; border: 1px solid rgba(81,62,38,.14); border-radius: 16px; padding: 12px 13px; background: rgba(255,255,255,.75); font: 15px ui-sans-serif, system-ui, sans-serif; }
@@ -742,9 +949,14 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
 </head>
 <body>
   <main>
-    <p><a href="/admin/books">← Back to library</a></p>
     <h1>Settings</h1>
     <p class="subtitle">Tune how OmniReader stores uploaded EPUB files and rotate the single-user admin password.</p>
+    <nav class="nav" aria-label="Admin navigation">
+      <a href="/admin/books">&#20027;&#39029;</a>
+      <a href="/admin/novels">&#23567;&#35828;&#31649;&#29702;</a>
+      <a href="/admin/sync">&#21516;&#27493;</a>
+      <a class="active" href="/admin/settings">&#35774;&#32622;</a>
+    </nav>
     {{if .Flash}}<div class="flash {{.FlashKind}}">{{.Flash}}</div>{{end}}
     <section class="panel">
       <h2>Saved filename pattern</h2>
@@ -897,6 +1109,18 @@ func settingsFlashMessage(status string, err string) string {
 	switch status {
 	case "filename_template_saved":
 		return "Filename pattern saved. New uploads will use it."
+	default:
+		return ""
+	}
+}
+
+func managementFlashMessage(status string, err string) string {
+	if err != "" {
+		return err
+	}
+	switch status {
+	case "saved":
+		return "Novel metadata saved."
 	default:
 		return ""
 	}

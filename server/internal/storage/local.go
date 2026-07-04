@@ -13,6 +13,7 @@ type Store interface {
 	Save(ctx context.Context, key string, body io.Reader) error
 	Open(ctx context.Context, key string) (io.ReadCloser, error)
 	Delete(ctx context.Context, key string) error
+	Rename(ctx context.Context, oldKey string, newKey string) error
 }
 
 type Local struct {
@@ -79,6 +80,28 @@ func (s *Local) Delete(_ context.Context, key string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete object: %w", err)
 	}
+	return nil
+}
+
+func (s *Local) Rename(_ context.Context, oldKey string, newKey string) error {
+	oldPath, err := s.pathFor(oldKey)
+	if err != nil {
+		return err
+	}
+	newPath, err := s.pathFor(newKey)
+	if err != nil {
+		return err
+	}
+	if oldPath == newPath {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		return fmt.Errorf("create renamed object parent: %w", err)
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return fmt.Errorf("rename object: %w", err)
+	}
+	_ = os.Remove(filepath.Dir(oldPath))
 	return nil
 }
 

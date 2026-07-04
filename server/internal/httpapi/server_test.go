@@ -305,6 +305,69 @@ func TestWebUploadRedirectsBackToLibrary(t *testing.T) {
 	}
 }
 
+func TestNovelManagementPageUpdatesBookDetails(t *testing.T) {
+	handler := testAuthHandler(t)
+	cookie := webLoginForTest(t, handler)
+	token := loginForTest(t, handler)
+
+	bookID := uploadBookForTest(t, handler, token, "Original Title", "Original Author")
+
+	pageReq := httptest.NewRequest(http.MethodGet, "/admin/novels", nil)
+	pageReq.AddCookie(cookie)
+	pageRes := httptest.NewRecorder()
+	handler.ServeHTTP(pageRes, pageReq)
+	if pageRes.Code != http.StatusOK {
+		t.Fatalf("novels page status = %d, body = %s", pageRes.Code, pageRes.Body.String())
+	}
+	if !strings.Contains(pageRes.Body.String(), "OmniReader Novel Management") || !strings.Contains(pageRes.Body.String(), "Original Title") {
+		t.Fatalf("novels page missing expected content: %s", pageRes.Body.String())
+	}
+
+	form := url.Values{}
+	form.Set("title", "Updated Title")
+	form.Set("author", "Updated Author")
+	form.Set("filename", "updated-file")
+	updateReq := httptest.NewRequest(http.MethodPost, "/admin/novels/"+bookID, strings.NewReader(form.Encode()))
+	updateReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	updateReq.AddCookie(cookie)
+	updateRes := httptest.NewRecorder()
+	handler.ServeHTTP(updateRes, updateReq)
+	if updateRes.Code != http.StatusSeeOther {
+		t.Fatalf("update novel status = %d, body = %s", updateRes.Code, updateRes.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/books", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listRes := httptest.NewRecorder()
+	handler.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRes.Code, listRes.Body.String())
+	}
+	body := listRes.Body.String()
+	for _, want := range []string{"Updated Title", "Updated Author", "updated-file.epub"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("updated list missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestSyncPageRendersPlaceholder(t *testing.T) {
+	handler := testAuthHandler(t)
+	cookie := webLoginForTest(t, handler)
+	req := httptest.NewRequest(http.MethodGet, "/admin/sync", nil)
+	req.AddCookie(cookie)
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("sync page status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "OmniReader Sync") || !strings.Contains(res.Body.String(), "&#24453;&#21516;&#27493;&#20219;&#21153;") {
+		t.Fatalf("sync page missing expected content: %s", res.Body.String())
+	}
+}
+
 func TestSettingsUpdateFilenameTemplateAndPassword(t *testing.T) {
 	handler := testAuthHandler(t)
 	cookie := webLoginForTest(t, handler)
@@ -410,6 +473,36 @@ func loginForTest(t *testing.T, handler http.Handler) string {
 		t.Fatalf("decode login response: %v", err)
 	}
 	return loginPayload["accessToken"]
+}
+
+func uploadBookForTest(t *testing.T, handler http.Handler, token string, title string, author string) string {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	file, err := writer.CreateFormFile("file", "fixture.epub")
+	if err != nil {
+		t.Fatalf("CreateFormFile returned error: %v", err)
+	}
+	_, _ = file.Write(fixtureEPUBBytes(t, title, author))
+	_ = writer.Close()
+
+	uploadReq := httptest.NewRequest(http.MethodPost, "/api/v1/books", &body)
+	uploadReq.Header.Set("Authorization", "Bearer "+token)
+	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
+	uploadRes := httptest.NewRecorder()
+	handler.ServeHTTP(uploadRes, uploadReq)
+	if uploadRes.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d, body = %s", uploadRes.Code, uploadRes.Body.String())
+	}
+	var uploadPayload struct {
+		Book struct {
+			ID string `json:"id"`
+		} `json:"book"`
+	}
+	if err := json.NewDecoder(uploadRes.Body).Decode(&uploadPayload); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	return uploadPayload.Book.ID
 }
 
 func webLoginForTest(t *testing.T, handler http.Handler) *http.Cookie {

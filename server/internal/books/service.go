@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ type Book struct {
 	ID         string     `json:"id"`
 	Title      string     `json:"title"`
 	Author     string     `json:"author"`
+	Filename   string     `json:"filename"`
 	Format     string     `json:"format"`
 	StorageKey string     `json:"-"`
 	FileSize   int64      `json:"fileSize"`
@@ -45,6 +47,12 @@ type CreateInput struct {
 	Title    string
 	Author   string
 	Body     io.Reader
+}
+
+type UpdateInput struct {
+	Title    string
+	Author   string
+	Filename string
 }
 
 func NewService(db *sql.DB, store storage.Store, opts Options) (*Service, error) {
@@ -108,6 +116,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
 		ID:         id,
 		Title:      title,
 		Author:     author,
+		Filename:   path.Base(storageKey),
 		Format:     "epub",
 		StorageKey: storageKey,
 		FileSize:   int64(len(data)),
@@ -189,6 +198,41 @@ WHERE id = ? AND archived_at IS NULL
 		return fmt.Errorf("archive book: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) UpdateDetails(ctx context.Context, id string, input UpdateInput) (Book, error) {
+	book, err := s.Get(ctx, id)
+	if err != nil {
+		return Book{}, err
+	}
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		return Book{}, errors.New("title is required")
+	}
+	author := strings.TrimSpace(input.Author)
+	filename := normalizeEPUBFilename(input.Filename)
+	if filename == "" {
+		filename = RenderFilenameTemplate(DefaultFilenameTemplate, title, author, s.now())
+	}
+	newStorageKey := path.Dir(book.StorageKey) + "/" + filename
+	if newStorageKey != book.StorageKey {
+		if err := s.store.Rename(ctx, book.StorageKey, newStorageKey); err != nil {
+			return Book{}, err
+		}
+	}
+	now := s.now()
+	_, err = s.db.ExecContext(ctx, `
+UPDATE books
+SET title = ?, author = ?, storage_key = ?, updated_at = ?
+WHERE id = ? AND archived_at IS NULL
+`, title, author, newStorageKey, formatTime(now), id)
+	if err != nil {
+		if newStorageKey != book.StorageKey {
+			_ = s.store.Rename(ctx, newStorageKey, book.StorageKey)
+		}
+		return Book{}, fmt.Errorf("update book details: %w", err)
+	}
+	return s.Get(ctx, id)
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
@@ -289,6 +333,7 @@ func scanBook(row scanner) (Book, error) {
 	if errParse != nil {
 		return Book{}, fmt.Errorf("parse updated_at: %w", errParse)
 	}
+	book.Filename = path.Base(book.StorageKey)
 	return book, nil
 }
 
@@ -307,4 +352,22 @@ func newID(prefix string) string {
 		panic(err)
 	}
 	return prefix + "_" + hex.EncodeToString(raw)
+}
+
+func normalizeEPUBFilename(filename string) string {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return ""
+	}
+	filename = filepath.Base(filename)
+	filename = invalidFilenameChars.ReplaceAllString(filename, "_")
+	filename = strings.Join(strings.Fields(filename), " ")
+	filename = strings.Trim(filename, " .-_")
+	if filename == "" {
+		return ""
+	}
+	if !strings.HasSuffix(strings.ToLower(filename), ".epub") {
+		filename += ".epub"
+	}
+	return filename
 }

@@ -47,3 +47,25 @@ func TestLocalRejectsPathTraversal(t *testing.T) {
 		t.Fatal("expected path traversal key to fail")
 	}
 }
+
+func TestLocalRename(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal returned error: %v", err)
+	}
+	if err := store.Save(ctx, "books/book-1/old.epub", strings.NewReader("epub")); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	if err := store.Rename(ctx, "books/book-1/old.epub", "books/book-1/new.epub"); err != nil {
+		t.Fatalf("Rename returned error: %v", err)
+	}
+	if _, err := store.Open(ctx, "books/book-1/old.epub"); err == nil {
+		t.Fatal("old key should not open after rename")
+	}
+	reader, err := store.Open(ctx, "books/book-1/new.epub")
+	if err != nil {
+		t.Fatalf("new key should open: %v", err)
+	}
+	_ = reader.Close()
+}
