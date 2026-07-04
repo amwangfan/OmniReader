@@ -16,6 +16,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.DataDir != DefaultDataDir {
 		t.Fatalf("data dir = %q, want %q", cfg.DataDir, DefaultDataDir)
 	}
+	if cfg.BooksDir != filepath.Join(DefaultDataDir, "books") {
+		t.Fatalf("books dir = %q", cfg.BooksDir)
+	}
 	wantDB := filepath.Join(DefaultDataDir, "app.db")
 	if cfg.DatabasePath != wantDB {
 		t.Fatalf("database path = %q, want %q", cfg.DatabasePath, wantDB)
@@ -29,6 +32,7 @@ func TestLoadAcceptsOverrides(t *testing.T) {
 	values := map[string]string{
 		"OMNIREADER_ADDR":           "0.0.0.0:9090",
 		"OMNIREADER_DATA_DIR":       "/opt/omnireader/data",
+		"OMNIREADER_BOOKS_DIR":      "/opt/omnireader/data/library",
 		"OMNIREADER_DATABASE_PATH":  "/opt/omnireader/data/custom.db",
 		"OMNIREADER_ADMIN_USERNAME": "owner",
 		"OMNIREADER_ADMIN_PASSWORD": "secret-password",
@@ -45,6 +49,9 @@ func TestLoadAcceptsOverrides(t *testing.T) {
 	}
 	if cfg.DataDir != "/opt/omnireader/data" {
 		t.Fatalf("data dir = %q", cfg.DataDir)
+	}
+	if cfg.BooksDir != "/opt/omnireader/data/library" {
+		t.Fatalf("books dir = %q", cfg.BooksDir)
 	}
 	if cfg.DatabasePath != "/opt/omnireader/data/custom.db" {
 		t.Fatalf("database path = %q", cfg.DatabasePath)

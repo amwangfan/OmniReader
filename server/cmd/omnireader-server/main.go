@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/amwangfan/omnireader/server/internal/auth"
+	"github.com/amwangfan/omnireader/server/internal/books"
 	"github.com/amwangfan/omnireader/server/internal/config"
 	"github.com/amwangfan/omnireader/server/internal/db"
 	"github.com/amwangfan/omnireader/server/internal/httpapi"
+	"github.com/amwangfan/omnireader/server/internal/storage"
 )
 
 const version = "dev"
@@ -48,10 +50,19 @@ func run() error {
 	if err := authService.BootstrapAdmin(ctx); err != nil {
 		return err
 	}
+	store, err := storage.NewLocal(cfg.BooksDir)
+	if err != nil {
+		return err
+	}
+	bookService, err := books.NewService(conn, store, books.Options{})
+	if err != nil {
+		return err
+	}
 
 	handler := httpapi.NewHandler(httpapi.Options{
 		BuildInfo:   httpapi.BuildInfo{Version: version},
 		AuthService: authService,
+		BookService: bookService,
 	})
 	server := &http.Server{
 		Addr:              cfg.Addr,

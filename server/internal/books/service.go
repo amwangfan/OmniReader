@@ -1,0 +1,224 @@
+package books
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/amwangfan/omnireader/server/internal/storage"
+)
+
+type Service struct {
+	db    *sql.DB
+	store storage.Store
+	now   func() time.Time
+}
+
+type Options struct {
+	Now func() time.Time
+}
+
+type Book struct {
+	ID         string     `json:"id"`
+	Title      string     `json:"title"`
+	Author     string     `json:"author"`
+	Format     string     `json:"format"`
+	StorageKey string     `json:"-"`
+	FileSize   int64      `json:"fileSize"`
+	Checksum   string     `json:"checksum"`
+	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
+}
+
+type CreateInput struct {
+	Filename string
+	Title    string
+	Author   string
+	Body     io.Reader
+}
+
+func NewService(db *sql.DB, store storage.Store, opts Options) (*Service, error) {
+	if db == nil {
+		return nil, errors.New("database is required")
+	}
+	if store == nil {
+		return nil, errors.New("storage is required")
+	}
+	now := opts.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	return &Service{db: db, store: store, now: now}, nil
+}
+
+func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
+	if input.Body == nil {
+		return Book{}, errors.New("book body is required")
+	}
+	if strings.ToLower(filepath.Ext(input.Filename)) != ".epub" {
+		return Book{}, errors.New("only epub files are supported")
+	}
+
+	data, err := io.ReadAll(input.Body)
+	if err != nil {
+		return Book{}, fmt.Errorf("read book body: %w", err)
+	}
+	if len(data) == 0 {
+		return Book{}, errors.New("book body is empty")
+	}
+
+	id := newID("book")
+	storageKey := "books/" + id + "/original.epub"
+	if err := s.store.Save(ctx, storageKey, bytes.NewReader(data)); err != nil {
+		return Book{}, err
+	}
+
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		title = strings.TrimSuffix(filepath.Base(input.Filename), filepath.Ext(input.Filename))
+	}
+	now := s.now()
+	book := Book{
+		ID:         id,
+		Title:      title,
+		Author:     strings.TrimSpace(input.Author),
+		Format:     "epub",
+		StorageKey: storageKey,
+		FileSize:   int64(len(data)),
+		Checksum:   checksum(data),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO books (id, title, author, format, storage_key, file_size, checksum, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, book.ID, book.Title, book.Author, book.Format, book.StorageKey, book.FileSize, book.Checksum, formatTime(book.CreatedAt), formatTime(book.UpdatedAt))
+	if err != nil {
+		_ = s.store.Delete(ctx, storageKey)
+		return Book{}, fmt.Errorf("insert book: %w", err)
+	}
+	return book, nil
+}
+
+func (s *Service) List(ctx context.Context) ([]Book, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, title, author, format, storage_key, file_size, checksum, archived_at, created_at, updated_at
+FROM books
+WHERE archived_at IS NULL
+ORDER BY created_at DESC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("list books: %w", err)
+	}
+	defer rows.Close()
+
+	var result []Book
+	for rows.Next() {
+		book, err := scanBook(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, book)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate books: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Service) Get(ctx context.Context, id string) (Book, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, title, author, format, storage_key, file_size, checksum, archived_at, created_at, updated_at
+FROM books
+WHERE id = ? AND archived_at IS NULL
+`, id)
+	book, err := scanBook(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Book{}, errors.New("book not found")
+	}
+	return book, err
+}
+
+func (s *Service) Open(ctx context.Context, id string) (Book, io.ReadCloser, error) {
+	book, err := s.Get(ctx, id)
+	if err != nil {
+		return Book{}, nil, err
+	}
+	reader, err := s.store.Open(ctx, book.StorageKey)
+	if err != nil {
+		return Book{}, nil, err
+	}
+	return book, reader, nil
+}
+
+func (s *Service) Archive(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE books
+SET archived_at = ?, updated_at = ?
+WHERE id = ? AND archived_at IS NULL
+`, formatTime(s.now()), formatTime(s.now()), id)
+	if err != nil {
+		return fmt.Errorf("archive book: %w", err)
+	}
+	return nil
+}
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanBook(row scanner) (Book, error) {
+	var book Book
+	var archivedAt sql.NullString
+	var createdAt string
+	var updatedAt string
+	err := row.Scan(&book.ID, &book.Title, &book.Author, &book.Format, &book.StorageKey, &book.FileSize, &book.Checksum, &archivedAt, &createdAt, &updatedAt)
+	if err != nil {
+		return Book{}, err
+	}
+	if archivedAt.Valid {
+		parsed, err := time.Parse(time.RFC3339Nano, archivedAt.String)
+		if err != nil {
+			return Book{}, fmt.Errorf("parse archived_at: %w", err)
+		}
+		book.ArchivedAt = &parsed
+	}
+	var errParse error
+	book.CreatedAt, errParse = time.Parse(time.RFC3339Nano, createdAt)
+	if errParse != nil {
+		return Book{}, fmt.Errorf("parse created_at: %w", errParse)
+	}
+	book.UpdatedAt, errParse = time.Parse(time.RFC3339Nano, updatedAt)
+	if errParse != nil {
+		return Book{}, fmt.Errorf("parse updated_at: %w", errParse)
+	}
+	return book, nil
+}
+
+func checksum(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func formatTime(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func newID(prefix string) string {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		panic(err)
+	}
+	return prefix + "_" + hex.EncodeToString(raw)
+}

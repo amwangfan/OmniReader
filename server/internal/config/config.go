@@ -15,6 +15,7 @@ const (
 type Config struct {
 	Addr          string
 	DataDir       string
+	BooksDir      string
 	DatabasePath  string
 	AdminUsername string
 	AdminPassword string
@@ -28,6 +29,7 @@ func LoadFromEnv() Config {
 func Load(lookup func(string) (string, bool)) Config {
 	addr := valueOrDefault(lookup, "OMNIREADER_ADDR", DefaultAddr)
 	dataDir := valueOrDefault(lookup, "OMNIREADER_DATA_DIR", DefaultDataDir)
+	booksDir := valueOrDefault(lookup, "OMNIREADER_BOOKS_DIR", filepath.Join(dataDir, "books"))
 	databasePath := valueOrDefault(lookup, "OMNIREADER_DATABASE_PATH", filepath.Join(dataDir, "app.db"))
 	adminUsername := valueOrDefault(lookup, "OMNIREADER_ADMIN_USERNAME", DefaultAdmin)
 	adminPassword := valueOrDefault(lookup, "OMNIREADER_ADMIN_PASSWORD", "")
@@ -36,6 +38,7 @@ func Load(lookup func(string) (string, bool)) Config {
 	return Config{
 		Addr:          addr,
 		DataDir:       dataDir,
+		BooksDir:      booksDir,
 		DatabasePath:  databasePath,
 		AdminUsername: adminUsername,
 		AdminPassword: adminPassword,
