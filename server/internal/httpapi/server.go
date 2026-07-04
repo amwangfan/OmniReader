@@ -171,15 +171,196 @@ func loginPage(w http.ResponseWriter, _ *http.Request) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OmniReader Login</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f1e8;
+      --card: rgba(255, 252, 246, 0.9);
+      --text: #252018;
+      --muted: #776b5d;
+      --line: rgba(81, 62, 38, 0.14);
+      --accent: #7a4f2a;
+      --accent-2: #1f6f5b;
+      --shadow: 0 24px 80px rgba(52, 38, 21, 0.16);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 18%, rgba(255, 214, 139, .42), transparent 24rem),
+        radial-gradient(circle at 88% 12%, rgba(117, 167, 146, .28), transparent 24rem),
+        linear-gradient(135deg, #fbf7ef, var(--bg));
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+    }
+    .shell {
+      width: min(980px, 100%);
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      gap: 22px;
+      align-items: stretch;
+    }
+    .hero, .card {
+      border: 1px solid var(--line);
+      border-radius: 34px;
+      background: var(--card);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+    .hero {
+      padding: clamp(28px, 5vw, 48px);
+      min-height: 470px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow: hidden;
+      position: relative;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -80px;
+      bottom: -100px;
+      width: 260px;
+      height: 260px;
+      border-radius: 50%;
+      background: rgba(122, 79, 42, .10);
+    }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--accent-2);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-family: ui-serif, "Iowan Old Style", Georgia, "Noto Serif SC", serif;
+      font-size: clamp(44px, 7vw, 82px);
+      line-height: .88;
+      letter-spacing: -.06em;
+    }
+    .subtitle {
+      margin: 18px 0 0;
+      max-width: 520px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.8;
+    }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 28px;
+      position: relative;
+      z-index: 1;
+    }
+    .chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 9px 12px;
+      background: rgba(255,255,255,.5);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .card {
+      padding: clamp(24px, 4vw, 38px);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    h2 {
+      margin: 0 0 8px;
+      font-family: ui-serif, Georgia, "Noto Serif SC", serif;
+      font-size: 30px;
+      letter-spacing: -.035em;
+    }
+    .hint {
+      margin: 0 0 24px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    label {
+      display: block;
+      margin: 15px 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px 15px;
+      background: rgba(255,255,255,.72);
+      color: var(--text);
+      font: 16px ui-sans-serif, system-ui, sans-serif;
+      outline: none;
+    }
+    input:focus {
+      border-color: rgba(31,111,91,.58);
+      box-shadow: 0 0 0 4px rgba(31,111,91,.10);
+    }
+    button {
+      width: 100%;
+      margin-top: 22px;
+      border: 0;
+      border-radius: 999px;
+      padding: 14px 18px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: .02em;
+    }
+    button:hover { filter: brightness(.96); transform: translateY(-1px); }
+    .footnote {
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    @media (max-width: 820px) {
+      body { padding: 18px; }
+      .shell { grid-template-columns: 1fr; }
+      .hero { min-height: 320px; }
+    }
+  </style>
 </head>
 <body>
-  <main>
-    <h1>OmniReader</h1>
-    <form method="post" action="/login">
-      <p><input type="text" name="username" placeholder="Username" autocomplete="username" required></p>
-      <p><input type="password" name="password" placeholder="Password" autocomplete="current-password" required></p>
-      <p><button type="submit">Login</button></p>
-    </form>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Self-hosted reading sync</p>
+        <h1>OmniReader</h1>
+        <p class="subtitle">A quiet place for your EPUB library: upload books, keep metadata tidy, and let your Android reader pull from the same source.</p>
+      </div>
+      <div class="chips" aria-label="Server capabilities">
+        <span class="chip">EPUB metadata</span>
+        <span class="chip">Private downloads</span>
+        <span class="chip">Progress sync ready</span>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Welcome back</h2>
+      <p class="hint">Sign in to manage the library and server settings.</p>
+      <form method="post" action="/login">
+        <label for="username">Username</label>
+        <input id="username" type="text" name="username" placeholder="admin" autocomplete="username" required autofocus>
+        <label for="password">Password</label>
+        <input id="password" type="password" name="password" placeholder="Your password" autocomplete="current-password" required>
+        <button type="submit">Enter library</button>
+      </form>
+      <p class="footnote">This server is single-user for now; all book and settings pages stay behind authentication.</p>
+    </section>
   </main>
 </body>
 </html>`))

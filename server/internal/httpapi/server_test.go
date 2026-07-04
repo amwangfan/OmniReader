@@ -44,6 +44,24 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestLoginPageRendersStyledForm(t *testing.T) {
+	handler := testAuthHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", res.Code, http.StatusOK)
+	}
+	body := res.Body.String()
+	for _, want := range []string{"Self-hosted reading sync", "Welcome back", `name="username"`, `name="password"`, "Enter library"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("login page missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestLoginAndMe(t *testing.T) {
 	handler := testAuthHandler(t)
 
