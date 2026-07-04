@@ -19,7 +19,7 @@ This project is authored and owned by the repository owner's GitHub account. Cod
 
 See [MVP design](docs/design/mvp-design.md).
 
-Android client source lives in [`android/`](android/). It is a native Kotlin + Jetpack Compose APK targeting the first usable OmniReader app flow.
+Android client source lives in the separate [`OmniReader_app`](https://github.com/amwangfan/OmniReader_app) repository. It is a native Kotlin + Jetpack Compose APK targeting the first usable OmniReader app flow.
 
 ## Local development
 
