@@ -36,7 +36,7 @@ const adminNavigationScript = `<script>
     const style = document.createElement("style");
     style.id = "omnireader-transition-style";
     style.textContent =
-      "main { will-change: transform, opacity; }" +
+      "#admin-app { will-change: transform, opacity; }" +
       ".omni-slide-out { opacity: 0; transform: translateX(-18px); transition: opacity 150ms ease, transform 150ms ease; }" +
       ".omni-slide-in { opacity: 0; transform: translateX(22px); }" +
       ".omni-slide-in.omni-slide-in-active { opacity: 1; transform: translateX(0); transition: opacity 220ms ease, transform 220ms cubic-bezier(.22,1,.36,1); }" +
@@ -53,13 +53,13 @@ const adminNavigationScript = `<script>
       window.location.href = href;
       return;
     }
-    const current = document.querySelector("main");
-    if (!current) {
+    const currentRoot = document.querySelector("#admin-app");
+    if (!currentRoot) {
       window.location.href = url.href;
       return;
     }
     ensureTransitionStyle();
-    current.classList.add("omni-slide-out");
+    currentRoot.classList.add("omni-slide-out");
     await new Promise(resolve => setTimeout(resolve, 140));
     const response = await fetch(url.href, { headers: { "X-OmniReader-Navigation": "1" } });
     if (!response.ok) {
@@ -68,17 +68,17 @@ const adminNavigationScript = `<script>
     }
     const html = await response.text();
     const nextDoc = new DOMParser().parseFromString(html, "text/html");
-    const nextMain = nextDoc.querySelector("main");
-    if (!nextMain) {
+    const nextRoot = nextDoc.querySelector("#admin-app");
+    if (!nextRoot) {
       window.location.href = url.href;
       return;
     }
     document.head.innerHTML = nextDoc.head.innerHTML;
     ensureTransitionStyle();
-    document.querySelector("main").replaceWith(nextMain);
+    document.querySelector("#admin-app").replaceWith(nextRoot);
     document.title = nextDoc.title || document.title;
     if (push) history.pushState({}, "", url.pathname + url.search);
-    const entered = document.querySelector("main");
+    const entered = document.querySelector("#admin-app");
     entered.classList.add("omni-slide-in");
     requestAnimationFrame(() => entered.classList.add("omni-slide-in-active"));
     setTimeout(() => entered.classList.remove("omni-slide-in", "omni-slide-in-active"), 280);
@@ -344,10 +344,11 @@ func loginPage(authService *auth.Service) http.HandlerFunc {
     h1 {
       margin: 0;
       font-family: ui-serif, "Iowan Old Style", Georgia, "Noto Serif SC", serif;
-      font-size: clamp(48px, 7.2vw, 88px);
-      line-height: .88;
+      font-size: clamp(44px, 6.4vw, 78px);
+      line-height: .82;
       letter-spacing: -.06em;
     }
+    .brand-line { display: block; }
     .subtitle {
       margin: 18px 0 0;
       max-width: 520px;
@@ -452,7 +453,10 @@ func loginPage(authService *auth.Service) http.HandlerFunc {
     <section class="hero">
       <div>
         <p class="eyebrow">Self-hosted reading sync</p>
-        <h1>OmniReader</h1>
+        <h1 aria-label="OmniReader">
+          <span class="brand-line">Omni</span>
+          <span class="brand-line">Reader</span>
+        </h1>
         <p class="subtitle">A quiet place for your EPUB library: upload books, keep metadata tidy, and let your Android reader pull from the same source.</p>
       </div>
       <div class="chips" aria-label="Server capabilities">
@@ -754,6 +758,7 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
   </style>
 </head>
 <body>
+  <div id="admin-app">
   <header>
     <section>
       <p class="eyebrow">Personal library sync</p>
@@ -809,6 +814,7 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       </div>
     </section>
   </main>
+  </div>
 ` + adminNavigationScript + `
 </body>
 </html>`))
@@ -888,6 +894,7 @@ func novelsPage(authService *auth.Service, bookService *books.Service) http.Hand
   </style>
 </head>
 <body>
+  <div id="admin-app">
   <main>
     <h1>&#23567;&#35828;&#31649;&#29702;</h1>
     <p class="subtitle">&#32500;&#25252;&#26381;&#21153;&#22120;&#20445;&#23384;&#30340; EPUB &#25991;&#20214;&#21517;&#12289;&#23567;&#35828;&#21517;&#12289;&#20316;&#32773;&#31561;&#20449;&#24687;&#12290;&#20869;&#23481;&#32534;&#36753;&#20250;&#25918;&#22312;&#36825;&#37324;&#32487;&#32493;&#25193;&#23637;&#12290;</p>
@@ -933,6 +940,7 @@ func novelsPage(authService *auth.Service, bookService *books.Service) http.Hand
       <p class="muted">&#21518;&#32493;&#21487;&#20197;&#22312;&#36825;&#37324;&#22686;&#21152; EPUB &#20869;&#37096; OPF &#20803;&#25968;&#25454;&#22238;&#20889;&#12289;&#31456;&#33410; HTML &#20462;&#35746;&#12289;&#23553;&#38754;&#26367;&#25442;&#31561;&#21151;&#33021;&#12290;&#24403;&#21069;&#29256;&#26412;&#21482;&#32500;&#25252;&#26381;&#21153;&#22120;&#25968;&#25454;&#24211;&#21644;&#20445;&#23384;&#25991;&#20214;&#21517;&#65292;&#19981;&#30452;&#25509;&#25913;&#20889; EPUB &#20869;&#23481;&#12290;</p>
     </section>
   </main>
+  </div>
 ` + adminNavigationScript + `
 </body>
 </html>`))
@@ -998,6 +1006,7 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
   </style>
 </head>
 <body>
+  <div id="admin-app">
   <main>
     <h1>&#21516;&#27493;</h1>
     <p class="subtitle">&#36825;&#37324;&#20316;&#20026; Android &#23458;&#25143;&#31471;&#12289;&#38405;&#35835;&#36827;&#24230;&#12289;&#19979;&#36733;&#25554;&#20214;&#21516;&#27493;&#29366;&#24577;&#30340;&#20837;&#21475;&#12290;&#24403;&#21069;&#20808;&#24314;&#31435;&#39029;&#38754;&#19982;&#23548;&#33322;&#22522;&#30784;&#12290;</p>
@@ -1017,6 +1026,7 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
       <p class="muted">&#36825;&#37324;&#20250;&#25215;&#36733;&#35774;&#22791; last seen&#12289;&#20070;&#31821;&#25289;&#21462;&#38431;&#21015;&#12289;&#38405;&#35835;&#36827;&#24230;&#20914;&#31361;&#25552;&#31034;&#12289;&#25554;&#20214;&#19979;&#36733;&#35760;&#24405;&#31561;&#21151;&#33021;&#12290;</p>
     </section>
   </main>
+  </div>
 ` + adminNavigationScript + `
 </body>
 </html>`))
@@ -1056,6 +1066,7 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
   </style>
 </head>
 <body>
+  <div id="admin-app">
   <main>
     <h1>Settings</h1>
     <p class="subtitle">Tune how OmniReader stores uploaded EPUB files and rotate the single-user admin password.</p>
@@ -1086,6 +1097,7 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
       </form>
     </section>
   </main>
+  </div>
 ` + adminNavigationScript + `
 </body>
 </html>`))
