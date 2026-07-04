@@ -311,7 +311,7 @@ func TestWebLoginCookieAllowsAdminBooksPage(t *testing.T) {
 	}
 }
 
-func TestAdminPagesUseSharedApplicationRoot(t *testing.T) {
+func TestAdminPagesUsePersistentShell(t *testing.T) {
 	handler := testAuthHandler(t)
 	cookie := webLoginForTest(t, handler)
 
@@ -327,16 +327,36 @@ func TestAdminPagesUseSharedApplicationRoot(t *testing.T) {
 				t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
 			}
 			body := res.Body.String()
-			if strings.Count(body, `id="admin-app"`) != 1 {
-				t.Fatalf("must render exactly one admin root: %s", body)
-			}
-			for _, want := range []string{`querySelector("#admin-app")`, `replaceWith(nextRoot)`} {
-				if !strings.Contains(body, want) {
-					t.Fatalf("navigation missing %q: %s", want, body)
+			for _, marker := range []string{
+				`id="admin-app"`,
+				`class="admin-header"`,
+				`class="admin-brand"`,
+				`class="admin-nav"`,
+				`id="admin-content"`,
+				`querySelector("#admin-content")`,
+				`replaceWith(nextContent)`,
+				`updateActiveNavigation(url.pathname)`,
+			} {
+				if !strings.Contains(body, marker) {
+					t.Fatalf("%s missing %q: %s", route, marker, body)
 				}
 			}
-			if strings.Contains(body, `querySelector("main").replaceWith`) {
-				t.Fatalf("navigation still replaces only main: %s", body)
+			if strings.Count(body, `id="admin-app"`) != 1 ||
+				strings.Count(body, `class="admin-header"`) != 1 ||
+				strings.Count(body, `class="admin-nav"`) != 1 ||
+				strings.Count(body, `id="admin-content"`) != 1 {
+				t.Fatalf("%s must render one persistent shell: %s", route, body)
+			}
+			if !strings.Contains(body, `<a class="active" href="`+route+`">`) {
+				t.Fatalf("%s missing active navigation item: %s", route, body)
+			}
+			for _, stale := range []string{
+				`querySelector("#admin-app").replaceWith`,
+				`querySelector("main").replaceWith`,
+			} {
+				if strings.Contains(body, stale) {
+					t.Fatalf("%s uses stale replacement boundary %q: %s", route, stale, body)
+				}
 			}
 		})
 	}
