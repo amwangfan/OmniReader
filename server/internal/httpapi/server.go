@@ -3,9 +3,12 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/amwangfan/omnireader/server/internal/auth"
@@ -39,6 +42,8 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("GET /api/v1/books/{bookID}/download", downloadBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("DELETE /api/v1/books/{bookID}", archiveBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("GET /admin/books", booksPage(opts.AuthService, opts.BookService))
+		mux.HandleFunc("POST /admin/books/upload", webUploadBook(opts.AuthService, opts.BookService))
+		mux.HandleFunc("POST /admin/books/{bookID}/archive", webArchiveBook(opts.AuthService, opts.BookService))
 	}
 	return mux
 }
@@ -218,25 +223,9 @@ func uploadBook(authService *auth.Service, bookService *books.Service) http.Hand
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		if err := r.ParseMultipartForm(64 << 20); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_multipart_form"})
-			return
-		}
-		file, header, err := r.FormFile("file")
+		book, err := createBookFromMultipart(r, bookService)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file_required"})
-			return
-		}
-		defer file.Close()
-
-		book, err := bookService.Create(r.Context(), books.CreateInput{
-			Filename: header.Filename,
-			Title:    r.FormValue("title"),
-			Author:   r.FormValue("author"),
-			Body:     file,
-		})
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "upload_failed"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{"book": book})
@@ -278,30 +267,223 @@ func archiveBook(authService *auth.Service, bookService *books.Service) http.Han
 }
 
 func booksPage(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
-	page := template.Must(template.New("books").Parse(`<!doctype html>
+	page := template.Must(template.New("books").Funcs(template.FuncMap{
+		"formatBytes": formatBytes,
+	}).Parse(`<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OmniReader Books</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f1e8;
+      --card: rgba(255, 252, 246, 0.88);
+      --text: #252018;
+      --muted: #776b5d;
+      --line: rgba(81, 62, 38, 0.14);
+      --accent: #7a4f2a;
+      --accent-2: #1f6f5b;
+      --danger: #9b2f2f;
+      --shadow: 0 18px 60px rgba(52, 38, 21, 0.12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: ui-serif, "Iowan Old Style", "Noto Serif SC", Georgia, serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 20% 0%, rgba(250, 220, 160, .45), transparent 32rem),
+        linear-gradient(135deg, #fbf7ef, var(--bg));
+    }
+    header {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 42px 24px 20px;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: end;
+    }
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--accent-2);
+      font: 700 12px/1.2 ui-sans-serif, system-ui, sans-serif;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(36px, 5vw, 64px);
+      line-height: .95;
+      letter-spacing: -.045em;
+    }
+    .subtitle {
+      margin: 12px 0 0;
+      color: var(--muted);
+      max-width: 620px;
+      font: 15px/1.7 ui-sans-serif, system-ui, sans-serif;
+    }
+    .stat {
+      min-width: 132px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 16px 18px;
+      background: rgba(255,255,255,.46);
+      text-align: right;
+      box-shadow: var(--shadow);
+    }
+    .stat strong { display: block; font-size: 34px; line-height: 1; }
+    .stat span { color: var(--muted); font: 13px ui-sans-serif, system-ui, sans-serif; }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 24px 48px;
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) 1fr;
+      gap: 22px;
+      align-items: start;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: var(--card);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+      padding: 24px;
+    }
+    h2 { margin: 0 0 16px; font-size: 22px; letter-spacing: -.02em; }
+    label {
+      display: block;
+      margin: 14px 0 7px;
+      color: var(--muted);
+      font: 700 12px/1.2 ui-sans-serif, system-ui, sans-serif;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    input[type="text"], input[type="file"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px 13px;
+      background: rgba(255,255,255,.68);
+      color: var(--text);
+      font: 15px ui-sans-serif, system-ui, sans-serif;
+    }
+    button, .button {
+      border: 0;
+      border-radius: 999px;
+      padding: 11px 16px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      font: 700 14px ui-sans-serif, system-ui, sans-serif;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    button:hover, .button:hover { filter: brightness(.96); transform: translateY(-1px); }
+    .button.secondary { background: var(--accent-2); }
+    .button.danger, button.danger { background: var(--danger); }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    .flash {
+      grid-column: 1 / -1;
+      border-radius: 18px;
+      padding: 13px 16px;
+      font: 14px ui-sans-serif, system-ui, sans-serif;
+      border: 1px solid var(--line);
+      background: rgba(31,111,91,.12);
+      color: var(--accent-2);
+    }
+    .flash.error { background: rgba(155,47,47,.10); color: var(--danger); }
+    .library {
+      display: grid;
+      gap: 14px;
+    }
+    .book {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 18px;
+      background: rgba(255,255,255,.52);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      align-items: center;
+    }
+    .book-title { margin: 0; font-size: 20px; letter-spacing: -.02em; }
+    .meta {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font: 13px/1.5 ui-sans-serif, system-ui, sans-serif;
+    }
+    .empty {
+      border: 1px dashed var(--line);
+      border-radius: 22px;
+      padding: 32px;
+      color: var(--muted);
+      text-align: center;
+      font: 15px/1.7 ui-sans-serif, system-ui, sans-serif;
+    }
+    @media (max-width: 820px) {
+      header { align-items: start; flex-direction: column; }
+      .stat { text-align: left; }
+      main { grid-template-columns: 1fr; }
+      .book { grid-template-columns: 1fr; }
+    }
+  </style>
 </head>
 <body>
+  <header>
+    <section>
+      <p class="eyebrow">Personal library sync</p>
+      <h1>OmniReader</h1>
+      <p class="subtitle">Upload EPUBs here, then let Android clients pull the library and reading progress from this server.</p>
+    </section>
+    <aside class="stat">
+      <strong>{{len .Books}}</strong>
+      <span>EPUB books</span>
+    </aside>
+  </header>
   <main>
-    <h1>OmniReader Books</h1>
-    <form method="post" action="/api/v1/books" enctype="multipart/form-data">
-      <p><input type="file" name="file" accept=".epub,application/epub+zip" required></p>
-      <p><input type="text" name="title" placeholder="Title"></p>
-      <p><input type="text" name="author" placeholder="Author"></p>
-      <p><button type="submit">Upload EPUB</button></p>
-    </form>
-    <h2>Library</h2>
-    <ul>
+    {{if .Flash}}<div class="flash {{.FlashKind}}">{{.Flash}}</div>{{end}}
+    <section class="panel">
+      <h2>Add a book</h2>
+      <form method="post" action="/admin/books/upload" enctype="multipart/form-data">
+        <label for="file">EPUB file</label>
+        <input id="file" type="file" name="file" accept=".epub,application/epub+zip" required>
+        <label for="title">Title override</label>
+        <input id="title" type="text" name="title" placeholder="Leave blank to use filename">
+        <label for="author">Author</label>
+        <input id="author" type="text" name="author" placeholder="Optional">
+        <div class="actions">
+          <button type="submit">Upload EPUB</button>
+        </div>
+      </form>
+    </section>
+    <section class="panel">
+      <h2>Library</h2>
+      <div class="library">
       {{range .Books}}
-      <li><a href="/api/v1/books/{{.ID}}/download">{{.Title}}</a> {{if .Author}}— {{.Author}}{{end}} <small>{{.FileSize}} bytes</small></li>
+      <article class="book">
+        <div>
+          <h3 class="book-title">{{.Title}}</h3>
+          <p class="meta">{{if .Author}}{{.Author}} · {{end}}{{formatBytes .FileSize}} · {{.Format}}</p>
+        </div>
+        <div class="actions">
+          <a class="button secondary" href="/api/v1/books/{{.ID}}/download">Download</a>
+          <form method="post" action="/admin/books/{{.ID}}/archive">
+            <button class="danger" type="submit">Archive</button>
+          </form>
+        </div>
+      </article>
       {{else}}
-      <li>No books uploaded yet.</li>
+      <div class="empty">No books uploaded yet. Pick an EPUB on the left to start the library.</div>
       {{end}}
-    </ul>
+      </div>
+    </section>
   </main>
 </body>
 </html>`))
@@ -316,8 +498,60 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = page.Execute(w, map[string]any{"Books": result})
+		_ = page.Execute(w, map[string]any{
+			"Books":     result,
+			"Flash":     flashMessage(r.URL.Query().Get("status"), r.URL.Query().Get("error")),
+			"FlashKind": flashKind(r.URL.Query().Get("error")),
+		})
 	}
+}
+
+func webUploadBook(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		if _, err := createBookFromMultipart(r, bookService); err != nil {
+			http.Redirect(w, r, "/admin/books?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/admin/books?status=uploaded", http.StatusSeeOther)
+	}
+}
+
+func webArchiveBook(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		if err := bookService.Archive(r.Context(), r.PathValue("bookID")); err != nil {
+			http.Redirect(w, r, "/admin/books?error="+url.QueryEscape("archive failed"), http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/admin/books?status=archived", http.StatusSeeOther)
+	}
+}
+
+func createBookFromMultipart(r *http.Request, bookService *books.Service) (books.Book, error) {
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		return books.Book{}, errors.New("invalid upload form")
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		return books.Book{}, errors.New("choose an EPUB file first")
+	}
+	defer file.Close()
+
+	book, err := bookService.Create(r.Context(), books.CreateInput{
+		Filename: header.Filename,
+		Title:    r.FormValue("title"),
+		Author:   r.FormValue("author"),
+		Body:     file,
+	})
+	if err != nil {
+		return books.Book{}, err
+	}
+	return book, nil
 }
 
 func requireUser(w http.ResponseWriter, r *http.Request, service *auth.Service) (auth.User, bool) {
@@ -347,4 +581,38 @@ func safeFilename(value string) string {
 	}
 	replacer := strings.NewReplacer(`"`, "", "\\", "", "/", "", ":", "", "*", "", "?", "", "<", "", ">", "", "|", "")
 	return replacer.Replace(value)
+}
+
+func flashMessage(status string, err string) string {
+	if err != "" {
+		return err
+	}
+	switch status {
+	case "uploaded":
+		return "Upload complete. The EPUB is now in your library."
+	case "archived":
+		return "Book archived. Existing client copies are not deleted automatically."
+	default:
+		return ""
+	}
+}
+
+func flashKind(err string) string {
+	if err != "" {
+		return "error"
+	}
+	return ""
+}
+
+func formatBytes(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return "1 KB"
+	}
+	kb := (size + unit - 1) / unit
+	if kb < unit {
+		return strconv.FormatInt(kb, 10) + " KB"
+	}
+	mb := float64(size) / (unit * unit)
+	return fmt.Sprintf("%.1f MB", mb)
 }

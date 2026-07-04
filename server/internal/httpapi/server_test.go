@@ -235,8 +235,47 @@ func TestWebLoginCookieAllowsAdminBooksPage(t *testing.T) {
 	if adminRes.Code != http.StatusOK {
 		t.Fatalf("admin books status = %d, body = %s", adminRes.Code, adminRes.Body.String())
 	}
-	if !strings.Contains(adminRes.Body.String(), "OmniReader Books") {
+	if !strings.Contains(adminRes.Body.String(), "Personal library sync") {
 		t.Fatalf("unexpected admin page: %s", adminRes.Body.String())
+	}
+}
+
+func TestWebUploadRedirectsBackToLibrary(t *testing.T) {
+	handler := testAuthHandler(t)
+	cookie := webLoginForTest(t, handler)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("title", "Browser Upload")
+	file, err := writer.CreateFormFile("file", "browser-upload.epub")
+	if err != nil {
+		t.Fatalf("CreateFormFile returned error: %v", err)
+	}
+	_, _ = file.Write([]byte("browser epub data"))
+	_ = writer.Close()
+
+	uploadReq := httptest.NewRequest(http.MethodPost, "/admin/books/upload", &body)
+	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
+	uploadReq.AddCookie(cookie)
+	uploadRes := httptest.NewRecorder()
+	handler.ServeHTTP(uploadRes, uploadReq)
+	if uploadRes.Code != http.StatusSeeOther {
+		t.Fatalf("web upload status = %d, body = %s", uploadRes.Code, uploadRes.Body.String())
+	}
+	if got := uploadRes.Header().Get("Location"); got != "/admin/books?status=uploaded" {
+		t.Fatalf("upload redirect = %q", got)
+	}
+
+	adminReq := httptest.NewRequest(http.MethodGet, "/admin/books?status=uploaded", nil)
+	adminReq.AddCookie(cookie)
+	adminRes := httptest.NewRecorder()
+	handler.ServeHTTP(adminRes, adminReq)
+	if adminRes.Code != http.StatusOK {
+		t.Fatalf("admin status = %d, body = %s", adminRes.Code, adminRes.Body.String())
+	}
+	bodyText := adminRes.Body.String()
+	if !strings.Contains(bodyText, "Browser Upload") || !strings.Contains(bodyText, "Upload complete") {
+		t.Fatalf("admin page missing uploaded book or flash: %s", bodyText)
 	}
 }
 
@@ -298,4 +337,23 @@ func loginForTest(t *testing.T, handler http.Handler) string {
 		t.Fatalf("decode login response: %v", err)
 	}
 	return loginPayload["accessToken"]
+}
+
+func webLoginForTest(t *testing.T, handler http.Handler) *http.Cookie {
+	t.Helper()
+	form := url.Values{}
+	form.Set("username", "admin")
+	form.Set("password", "password")
+	loginReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRes := httptest.NewRecorder()
+	handler.ServeHTTP(loginRes, loginReq)
+	if loginRes.Code != http.StatusSeeOther {
+		t.Fatalf("web login status = %d, body = %s", loginRes.Code, loginRes.Body.String())
+	}
+	cookies := loginRes.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected login cookie")
+	}
+	return cookies[0]
 }
