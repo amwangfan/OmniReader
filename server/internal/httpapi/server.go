@@ -36,7 +36,7 @@ const adminNavigationScript = `<script>
     const style = document.createElement("style");
     style.id = "omnireader-transition-style";
     style.textContent =
-      "#admin-app { will-change: transform, opacity; }" +
+      "#admin-content { will-change: transform, opacity; }" +
       ".omni-slide-out { opacity: 0; transform: translateX(-18px); transition: opacity 150ms ease, transform 150ms ease; }" +
       ".omni-slide-in { opacity: 0; transform: translateX(22px); }" +
       ".omni-slide-in.omni-slide-in-active { opacity: 1; transform: translateX(0); transition: opacity 220ms ease, transform 220ms cubic-bezier(.22,1,.36,1); }" +
@@ -47,19 +47,24 @@ const adminNavigationScript = `<script>
     const url = new URL(href, window.location.href);
     return paths.has(url.pathname) ? url : null;
   }
+  function updateActiveNavigation(pathname) {
+    document.querySelectorAll(".admin-nav a[href]").forEach(link => {
+      link.classList.toggle("active", new URL(link.href, window.location.href).pathname === pathname);
+    });
+  }
   async function navigate(href, push) {
     const url = adminURL(href);
     if (!url) {
       window.location.href = href;
       return;
     }
-    const currentRoot = document.querySelector("#admin-app");
-    if (!currentRoot) {
+    const currentContent = document.querySelector("#admin-content");
+    if (!currentContent) {
       window.location.href = url.href;
       return;
     }
     ensureTransitionStyle();
-    currentRoot.classList.add("omni-slide-out");
+    currentContent.classList.add("omni-slide-out");
     await new Promise(resolve => setTimeout(resolve, 140));
     const response = await fetch(url.href, { headers: { "X-OmniReader-Navigation": "1" } });
     if (!response.ok) {
@@ -68,17 +73,18 @@ const adminNavigationScript = `<script>
     }
     const html = await response.text();
     const nextDoc = new DOMParser().parseFromString(html, "text/html");
-    const nextRoot = nextDoc.querySelector("#admin-app");
-    if (!nextRoot) {
+    const nextContent = nextDoc.querySelector("#admin-content");
+    if (!nextContent) {
       window.location.href = url.href;
       return;
     }
     document.head.innerHTML = nextDoc.head.innerHTML;
     ensureTransitionStyle();
-    document.querySelector("#admin-app").replaceWith(nextRoot);
+    document.querySelector("#admin-content").replaceWith(nextContent);
     document.title = nextDoc.title || document.title;
     if (push) history.pushState({}, "", url.pathname + url.search);
-    const entered = document.querySelector("#admin-app");
+    updateActiveNavigation(url.pathname);
+    const entered = document.querySelector("#admin-content");
     entered.classList.add("omni-slide-in");
     requestAnimationFrame(() => entered.classList.add("omni-slide-in-active"));
     setTimeout(() => entered.classList.remove("omni-slide-in", "omni-slide-in-active"), 280);
@@ -600,26 +606,22 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
         radial-gradient(circle at 20% 0%, rgba(250, 220, 160, .45), transparent 32rem),
         linear-gradient(135deg, #fbf7ef, var(--bg));
     }
-    header {
+    .admin-header {
       max-width: 1120px;
       margin: 0 auto;
-      padding: 42px 24px 20px;
-      display: flex;
-      justify-content: space-between;
-      gap: 24px;
-      align-items: end;
+      padding: 36px 24px 18px;
     }
-    .eyebrow {
+    .admin-eyebrow {
       margin: 0 0 8px;
       color: var(--accent-2);
       font: 700 12px/1.2 ui-sans-serif, system-ui, sans-serif;
       letter-spacing: .16em;
       text-transform: uppercase;
     }
-    h1 {
+    .admin-brand {
       margin: 0;
-      font-size: clamp(36px, 5vw, 64px);
-      line-height: .95;
+      color: var(--text);
+      font: 700 clamp(36px, 5vw, 64px)/.95 ui-serif, Georgia, "Noto Serif SC", serif;
       letter-spacing: -.045em;
     }
     .subtitle {
@@ -628,13 +630,13 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       max-width: 620px;
       font: 15px/1.7 ui-sans-serif, system-ui, sans-serif;
     }
-    .nav {
+    .admin-nav {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
       margin-top: 18px;
     }
-    .nav a {
+    .admin-nav a {
       border: 1px solid var(--line);
       border-radius: 999px;
       padding: 8px 12px;
@@ -643,23 +645,12 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       text-decoration: none;
       font: 700 13px ui-sans-serif, system-ui, sans-serif;
     }
-    .nav a.active {
+    .admin-nav a.active {
       color: #fff;
       background: var(--accent);
       border-color: transparent;
     }
-    .stat {
-      min-width: 132px;
-      border: 1px solid var(--line);
-      border-radius: 22px;
-      padding: 16px 18px;
-      background: rgba(255,255,255,.46);
-      text-align: right;
-      box-shadow: var(--shadow);
-    }
-    .stat strong { display: block; font-size: 34px; line-height: 1; }
-    .stat span { color: var(--muted); font: 13px ui-sans-serif, system-ui, sans-serif; }
-    main {
+    #admin-content {
       max-width: 1120px;
       margin: 0 auto;
       padding: 0 24px 48px;
@@ -668,6 +659,8 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       gap: 22px;
       align-items: start;
     }
+    .module-intro { grid-column: 1 / -1; }
+    .module-intro h2 { margin-bottom: 8px; font-size: 30px; }
     .panel {
       border: 1px solid var(--line);
       border-radius: 28px;
@@ -750,33 +743,28 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       font: 15px/1.7 ui-sans-serif, system-ui, sans-serif;
     }
     @media (max-width: 820px) {
-      header { align-items: start; flex-direction: column; }
-      .stat { text-align: left; }
-      main { grid-template-columns: 1fr; }
+      #admin-content { grid-template-columns: 1fr; }
       .book { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <div id="admin-app">
-  <header>
-    <section>
-      <p class="eyebrow">Personal library sync</p>
-      <h1>OmniReader</h1>
-      <p class="subtitle">Upload EPUBs here, then let Android clients pull the library and reading progress from this server.</p>
-      <nav class="nav" aria-label="Admin navigation">
-        <a class="active" href="/admin/books">&#20027;&#39029;</a>
-        <a href="/admin/novels">&#23567;&#35828;&#31649;&#29702;</a>
-        <a href="/admin/sync">&#21516;&#27493;</a>
-        <a href="/admin/settings">&#35774;&#32622;</a>
-      </nav>
-    </section>
-    <aside class="stat">
-      <strong>{{len .Books}}</strong>
-      <span>EPUB books</span>
-    </aside>
+  <header class="admin-header">
+    <p class="admin-eyebrow">Personal library sync</p>
+    <h1 class="admin-brand">OmniReader</h1>
+    <nav class="admin-nav" aria-label="Admin navigation">
+      <a class="active" href="/admin/books">&#20027;&#39029;</a>
+      <a href="/admin/novels">&#23567;&#35828;&#31649;&#29702;</a>
+      <a href="/admin/sync">&#21516;&#27493;</a>
+      <a href="/admin/settings">&#35774;&#32622;</a>
+    </nav>
   </header>
-  <main>
+  <main id="admin-content">
+    <section class="module-intro">
+      <h2>&#20027;&#39029;</h2>
+      <p class="subtitle">Upload EPUBs here, then let Android clients pull the library and reading progress from this server. {{len .Books}} EPUB books are stored.</p>
+    </section>
     {{if .Flash}}<div class="flash {{.FlashKind}}">{{.Flash}}</div>{{end}}
     <section class="panel">
       <h2>Add a book</h2>
@@ -874,13 +862,16 @@ func novelsPage(authService *auth.Service, bookService *books.Service) http.Hand
   <title>OmniReader Novel Management</title>
   <style>
     body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, sans-serif; color: #252018; background: linear-gradient(135deg,#fbf7ef,#f1e5d2); }
-    main { max-width: 1120px; margin: 0 auto; padding: 44px 24px; }
+    .admin-header { max-width: 1120px; margin: 0 auto; padding: 36px 24px 18px; }
+    .admin-eyebrow { margin: 0 0 8px; color: #1f6f5b; font: 700 12px/1.2 ui-sans-serif,system-ui,sans-serif; letter-spacing: .16em; text-transform: uppercase; }
+    .admin-brand { margin: 0; color: #252018; font: 700 clamp(36px,5vw,64px)/.95 ui-serif,Georgia,"Noto Serif SC",serif; letter-spacing: -.045em; }
+    .admin-nav { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+    .admin-nav a { border: 1px solid rgba(81,62,38,.14); border-radius: 999px; padding: 8px 12px; color: #776b5d; background: rgba(255,255,255,.46); text-decoration: none; font: 700 13px ui-sans-serif,system-ui,sans-serif; }
+    .admin-nav a.active { color: #fff; background: #7a4f2a; border-color: transparent; }
+    #admin-content { max-width: 1120px; margin: 0 auto; padding: 0 24px 44px; }
     a { color: #1f6f5b; }
-    h1 { font-family: ui-serif, Georgia, "Noto Serif SC", serif; font-size: clamp(34px, 5vw, 56px); margin: 0 0 10px; letter-spacing: -.04em; }
+    .module-title { font-family: ui-serif, Georgia, "Noto Serif SC", serif; font-size: clamp(30px, 4vw, 46px); margin: 0 0 10px; letter-spacing: -.04em; }
     .subtitle { color: #776b5d; margin: 0 0 22px; line-height: 1.7; }
-    .nav { display: flex; gap: 10px; flex-wrap: wrap; margin: 18px 0 24px; }
-    .nav a { border: 1px solid rgba(81,62,38,.14); border-radius: 999px; padding: 8px 12px; color: #776b5d; background: rgba(255,255,255,.46); text-decoration: none; font-size: 13px; font-weight: 800; }
-    .nav a.active { color: #fff; background: #7a4f2a; border-color: transparent; }
     .panel { border: 1px solid rgba(81,62,38,.14); border-radius: 28px; background: rgba(255,252,246,.9); box-shadow: 0 18px 60px rgba(52,38,21,.12); padding: 20px; margin: 18px 0; overflow-x: auto; }
     .flash { border-radius: 18px; padding: 13px 16px; margin: 0 0 18px; background: rgba(31,111,91,.12); color: #1f6f5b; }
     .flash.error { background: rgba(155,47,47,.10); color: #9b2f2f; }
@@ -895,15 +886,19 @@ func novelsPage(authService *auth.Service, bookService *books.Service) http.Hand
 </head>
 <body>
   <div id="admin-app">
-  <main>
-    <h1>&#23567;&#35828;&#31649;&#29702;</h1>
-    <p class="subtitle">&#32500;&#25252;&#26381;&#21153;&#22120;&#20445;&#23384;&#30340; EPUB &#25991;&#20214;&#21517;&#12289;&#23567;&#35828;&#21517;&#12289;&#20316;&#32773;&#31561;&#20449;&#24687;&#12290;&#20869;&#23481;&#32534;&#36753;&#20250;&#25918;&#22312;&#36825;&#37324;&#32487;&#32493;&#25193;&#23637;&#12290;</p>
-    <nav class="nav" aria-label="Admin navigation">
+  <header class="admin-header">
+    <p class="admin-eyebrow">Personal library sync</p>
+    <h1 class="admin-brand">OmniReader</h1>
+    <nav class="admin-nav" aria-label="Admin navigation">
       <a href="/admin/books">&#20027;&#39029;</a>
       <a class="active" href="/admin/novels">&#23567;&#35828;&#31649;&#29702;</a>
       <a href="/admin/sync">&#21516;&#27493;</a>
       <a href="/admin/settings">&#35774;&#32622;</a>
     </nav>
+  </header>
+  <main id="admin-content">
+    <h2 class="module-title">&#23567;&#35828;&#31649;&#29702;</h2>
+    <p class="subtitle">&#32500;&#25252;&#26381;&#21153;&#22120;&#20445;&#23384;&#30340; EPUB &#25991;&#20214;&#21517;&#12289;&#23567;&#35828;&#21517;&#12289;&#20316;&#32773;&#31561;&#20449;&#24687;&#12290;&#20869;&#23481;&#32534;&#36753;&#20250;&#25918;&#22312;&#36825;&#37324;&#32487;&#32493;&#25193;&#23637;&#12290;</p>
     {{if .Flash}}<div class="flash {{.FlashKind}}">{{.Flash}}</div>{{end}}
     <section class="panel">
       {{if .Books}}
@@ -993,12 +988,15 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
   <title>OmniReader Sync</title>
   <style>
     body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, sans-serif; color: #252018; background: linear-gradient(135deg,#fbf7ef,#f1e5d2); }
-    main { max-width: 980px; margin: 0 auto; padding: 44px 24px; }
-    h1 { font-family: ui-serif, Georgia, "Noto Serif SC", serif; font-size: clamp(34px, 5vw, 56px); margin: 0 0 10px; letter-spacing: -.04em; }
+    .admin-header { max-width: 1120px; margin: 0 auto; padding: 36px 24px 18px; }
+    .admin-eyebrow { margin: 0 0 8px; color: #1f6f5b; font: 700 12px/1.2 ui-sans-serif,system-ui,sans-serif; letter-spacing: .16em; text-transform: uppercase; }
+    .admin-brand { margin: 0; color: #252018; font: 700 clamp(36px,5vw,64px)/.95 ui-serif,Georgia,"Noto Serif SC",serif; letter-spacing: -.045em; }
+    .admin-nav { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+    .admin-nav a { border: 1px solid rgba(81,62,38,.14); border-radius: 999px; padding: 8px 12px; color: #776b5d; background: rgba(255,255,255,.46); text-decoration: none; font: 700 13px ui-sans-serif,system-ui,sans-serif; }
+    .admin-nav a.active { color: #fff; background: #7a4f2a; border-color: transparent; }
+    #admin-content { max-width: 980px; margin: 0 auto; padding: 0 24px 44px; }
+    .module-title { font-family: ui-serif, Georgia, "Noto Serif SC", serif; font-size: clamp(30px, 4vw, 46px); margin: 0 0 10px; letter-spacing: -.04em; }
     .subtitle, .muted { color: #776b5d; line-height: 1.7; }
-    .nav { display: flex; gap: 10px; flex-wrap: wrap; margin: 18px 0 24px; }
-    .nav a { border: 1px solid rgba(81,62,38,.14); border-radius: 999px; padding: 8px 12px; color: #776b5d; background: rgba(255,255,255,.46); text-decoration: none; font-size: 13px; font-weight: 800; }
-    .nav a.active { color: #fff; background: #7a4f2a; border-color: transparent; }
     .grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 16px; }
     .panel { border: 1px solid rgba(81,62,38,.14); border-radius: 28px; background: rgba(255,252,246,.9); box-shadow: 0 18px 60px rgba(52,38,21,.12); padding: 22px; }
     .num { font-size: 38px; font-weight: 900; margin: 0; color: #7a4f2a; }
@@ -1007,15 +1005,19 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
 </head>
 <body>
   <div id="admin-app">
-  <main>
-    <h1>&#21516;&#27493;</h1>
-    <p class="subtitle">&#36825;&#37324;&#20316;&#20026; Android &#23458;&#25143;&#31471;&#12289;&#38405;&#35835;&#36827;&#24230;&#12289;&#19979;&#36733;&#25554;&#20214;&#21516;&#27493;&#29366;&#24577;&#30340;&#20837;&#21475;&#12290;&#24403;&#21069;&#20808;&#24314;&#31435;&#39029;&#38754;&#19982;&#23548;&#33322;&#22522;&#30784;&#12290;</p>
-    <nav class="nav" aria-label="Admin navigation">
+  <header class="admin-header">
+    <p class="admin-eyebrow">Personal library sync</p>
+    <h1 class="admin-brand">OmniReader</h1>
+    <nav class="admin-nav" aria-label="Admin navigation">
       <a href="/admin/books">&#20027;&#39029;</a>
       <a href="/admin/novels">&#23567;&#35828;&#31649;&#29702;</a>
       <a class="active" href="/admin/sync">&#21516;&#27493;</a>
       <a href="/admin/settings">&#35774;&#32622;</a>
     </nav>
+  </header>
+  <main id="admin-content">
+    <h2 class="module-title">&#21516;&#27493;</h2>
+    <p class="subtitle">&#36825;&#37324;&#20316;&#20026; Android &#23458;&#25143;&#31471;&#12289;&#38405;&#35835;&#36827;&#24230;&#12289;&#19979;&#36733;&#25554;&#20214;&#21516;&#27493;&#29366;&#24577;&#30340;&#20837;&#21475;&#12290;&#24403;&#21069;&#20808;&#24314;&#31435;&#39029;&#38754;&#19982;&#23548;&#33322;&#22522;&#30784;&#12290;</p>
     <section class="grid">
       <article class="panel"><p class="num">0</p><p class="muted">&#24050;&#27880;&#20876;&#35774;&#22791;</p></article>
       <article class="panel"><p class="num">0</p><p class="muted">&#24453;&#21516;&#27493;&#20219;&#21153;</p></article>
@@ -1049,13 +1051,16 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
   <title>OmniReader Settings</title>
   <style>
     body { margin: 0; min-height: 100vh; font-family: ui-sans-serif, system-ui, sans-serif; color: #252018; background: linear-gradient(135deg,#fbf7ef,#f1e5d2); }
-    main { max-width: 880px; margin: 0 auto; padding: 44px 24px; }
+    .admin-header { max-width: 1120px; margin: 0 auto; padding: 36px 24px 18px; }
+    .admin-eyebrow { margin: 0 0 8px; color: #1f6f5b; font: 700 12px/1.2 ui-sans-serif,system-ui,sans-serif; letter-spacing: .16em; text-transform: uppercase; }
+    .admin-brand { margin: 0; color: #252018; font: 700 clamp(36px,5vw,64px)/.95 ui-serif,Georgia,"Noto Serif SC",serif; letter-spacing: -.045em; }
+    .admin-nav { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+    .admin-nav a { border: 1px solid rgba(81,62,38,.14); border-radius: 999px; padding: 8px 12px; color: #776b5d; background: rgba(255,255,255,.46); text-decoration: none; font: 700 13px ui-sans-serif,system-ui,sans-serif; }
+    .admin-nav a.active { color: #fff; background: #7a4f2a; border-color: transparent; }
+    #admin-content { max-width: 880px; margin: 0 auto; padding: 0 24px 44px; }
     a { color: #1f6f5b; }
-    h1 { font-family: ui-serif, Georgia, serif; font-size: clamp(34px, 5vw, 56px); margin: 0 0 10px; letter-spacing: -.04em; }
+    .module-title { font-family: ui-serif, Georgia, serif; font-size: clamp(30px, 4vw, 46px); margin: 0 0 10px; letter-spacing: -.04em; }
     .subtitle { color: #776b5d; margin: 0 0 26px; line-height: 1.7; }
-    .nav { display: flex; gap: 10px; flex-wrap: wrap; margin: 18px 0 24px; }
-    .nav a { border: 1px solid rgba(81,62,38,.14); border-radius: 999px; padding: 8px 12px; color: #776b5d; background: rgba(255,255,255,.46); text-decoration: none; font-size: 13px; font-weight: 800; }
-    .nav a.active { color: #fff; background: #7a4f2a; border-color: transparent; }
     .panel { border: 1px solid rgba(81,62,38,.14); border-radius: 28px; background: rgba(255,252,246,.9); box-shadow: 0 18px 60px rgba(52,38,21,.12); padding: 24px; margin: 18px 0; }
     label { display: block; margin: 14px 0 7px; color: #776b5d; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
     input { width: 100%; border: 1px solid rgba(81,62,38,.14); border-radius: 16px; padding: 12px 13px; background: rgba(255,255,255,.75); font: 15px ui-sans-serif, system-ui, sans-serif; }
@@ -1067,15 +1072,19 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
 </head>
 <body>
   <div id="admin-app">
-  <main>
-    <h1>Settings</h1>
-    <p class="subtitle">Tune how OmniReader stores uploaded EPUB files and rotate the single-user admin password.</p>
-    <nav class="nav" aria-label="Admin navigation">
+  <header class="admin-header">
+    <p class="admin-eyebrow">Personal library sync</p>
+    <h1 class="admin-brand">OmniReader</h1>
+    <nav class="admin-nav" aria-label="Admin navigation">
       <a href="/admin/books">&#20027;&#39029;</a>
       <a href="/admin/novels">&#23567;&#35828;&#31649;&#29702;</a>
       <a href="/admin/sync">&#21516;&#27493;</a>
       <a class="active" href="/admin/settings">&#35774;&#32622;</a>
     </nav>
+  </header>
+  <main id="admin-content">
+    <h2 class="module-title">Settings</h2>
+    <p class="subtitle">Tune how OmniReader stores uploaded EPUB files and rotate the single-user admin password.</p>
     {{if .Flash}}<div class="flash {{.FlashKind}}">{{.Flash}}</div>{{end}}
     <section class="panel">
       <h2>Saved filename pattern</h2>
