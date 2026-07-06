@@ -112,6 +112,34 @@ CREATE INDEX reading_daily_device_date_idx ON reading_daily(device_id, reading_d
 CREATE INDEX reading_daily_book_date_idx ON reading_daily(book_id, reading_date DESC);
 `,
 	},
+	{
+		Version: 4,
+		Name:    "epub_revisions",
+		SQL: `
+ALTER TABLE books ADD COLUMN cover_media_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE books ADD COLUMN cover_width INTEGER NOT NULL DEFAULT 0 CHECK (cover_width >= 0);
+ALTER TABLE books ADD COLUMN cover_height INTEGER NOT NULL DEFAULT 0 CHECK (cover_height >= 0);
+CREATE TABLE book_revisions (
+  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  revision TEXT NOT NULL,
+  storage_key TEXT NOT NULL UNIQUE,
+  cover_key TEXT NOT NULL DEFAULT '',
+  content_index_key TEXT NOT NULL DEFAULT '',
+  checksum TEXT NOT NULL,
+  file_size INTEGER NOT NULL CHECK (file_size >= 0),
+  change_type TEXT NOT NULL,
+  change_summary TEXT NOT NULL DEFAULT '',
+  is_original INTEGER NOT NULL DEFAULT 0 CHECK (is_original IN (0, 1)),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (book_id, revision)
+);
+CREATE UNIQUE INDEX book_revisions_one_original_idx ON book_revisions(book_id) WHERE is_original = 1;
+CREATE INDEX book_revisions_book_created_idx ON book_revisions(book_id, created_at DESC);
+INSERT INTO book_revisions (book_id, revision, storage_key, cover_key, checksum, file_size, change_type, change_summary, is_original, created_at)
+SELECT id, content_revision, storage_key, cover_key, checksum, file_size, 'upload', 'Original upload', 1, created_at
+FROM books;
+`,
+	},
 }
 
 func OpenAndMigrate(ctx context.Context, databasePath string) (*sql.DB, error) {

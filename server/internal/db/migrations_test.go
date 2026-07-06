@@ -18,13 +18,13 @@ func TestOpenAndMigrateCreatesCoreTables(t *testing.T) {
 	}
 	defer conn.Close()
 
-	for _, table := range []string{"users", "sessions", "books", "devices", "reading_progress", "reading_daily", "settings", "schema_migrations"} {
+	for _, table := range []string{"users", "sessions", "books", "book_revisions", "devices", "reading_progress", "reading_daily", "settings", "schema_migrations"} {
 		if !tableExists(t, conn, table) {
 			t.Fatalf("expected table %q to exist", table)
 		}
 	}
 	for table, columns := range map[string][]string{
-		"books":            {"content_revision"},
+		"books":            {"content_revision", "cover_media_type", "cover_width", "cover_height"},
 		"devices":          {"system_name", "manufacturer", "model", "app_version", "disabled_at"},
 		"reading_progress": {"content_revision", "client_updated_at"},
 	} {
@@ -33,6 +33,54 @@ func TestOpenAndMigrateCreatesCoreTables(t *testing.T) {
 				t.Fatalf("expected column %s.%s to exist", table, column)
 			}
 		}
+	}
+}
+
+func TestMigrationFourBackfillsOneImmutableOriginalAndCascades(t *testing.T) {
+	ctx := context.Background()
+	conn, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, migrations[0].SQL+migrations[1].SQL+migrations[2].SQL); err != nil {
+		t.Fatalf("apply legacy schema: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations VALUES (1,'core','x'),(2,'settings','x'),(3,'reading','x')`); err != nil {
+		t.Fatal(err)
+	}
+	const revision = "2026-07-06T01:02:03.123456789Z"
+	if _, err := conn.ExecContext(ctx, `INSERT INTO books (id,title,format,storage_key,file_size,checksum,content_revision,created_at,updated_at) VALUES ('book','Book','epub','books/book/original.epub',123,'abc',?,?,?)`, revision, revision, revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunMigrations(ctx, conn); err != nil {
+		t.Fatalf("RunMigrations: %v", err)
+	}
+	if err := RunMigrations(ctx, conn); err != nil {
+		t.Fatalf("idempotent RunMigrations: %v", err)
+	}
+	var count, original int
+	var key, checksum string
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*), SUM(is_original), storage_key, checksum FROM book_revisions WHERE book_id='book'`).Scan(&count, &original, &key, &checksum); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || original != 1 || key != "books/book/original.epub" || checksum != "abc" {
+		t.Fatalf("backfill = count %d original %d key %q checksum %q", count, original, key, checksum)
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO book_revisions (book_id,revision,storage_key,checksum,file_size,change_type,change_summary,is_original,created_at) VALUES ('book','2026-07-06T01:02:04.123456789Z','x','x',1,'upload','',1,?)`, revision); err == nil {
+		t.Fatal("expected a second original revision to violate uniqueness")
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM books WHERE id='book'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM book_revisions WHERE book_id='book'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("revision rows after parent deletion = %d, err=%v", count, err)
 	}
 }
 
