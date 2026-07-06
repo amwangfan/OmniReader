@@ -15,6 +15,7 @@ import (
 	"github.com/amwangfan/omnireader/server/internal/config"
 	"github.com/amwangfan/omnireader/server/internal/db"
 	"github.com/amwangfan/omnireader/server/internal/httpapi"
+	"github.com/amwangfan/omnireader/server/internal/reading"
 	"github.com/amwangfan/omnireader/server/internal/storage"
 )
 
@@ -58,11 +59,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	readingService, err := reading.NewService(conn, reading.Options{})
+	if err != nil {
+		return err
+	}
 
 	handler := httpapi.NewHandler(httpapi.Options{
-		BuildInfo:   httpapi.BuildInfo{Version: version},
-		AuthService: authService,
-		BookService: bookService,
+		BuildInfo:      httpapi.BuildInfo{Version: version},
+		AuthService:    authService,
+		BookService:    bookService,
+		ReadingService: readingService,
 	})
 	server := &http.Server{
 		Addr:              cfg.Addr,

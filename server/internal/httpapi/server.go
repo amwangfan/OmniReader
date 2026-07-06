@@ -14,6 +14,7 @@ import (
 
 	"github.com/amwangfan/omnireader/server/internal/auth"
 	"github.com/amwangfan/omnireader/server/internal/books"
+	"github.com/amwangfan/omnireader/server/internal/reading"
 )
 
 type BuildInfo struct {
@@ -21,9 +22,10 @@ type BuildInfo struct {
 }
 
 type Options struct {
-	BuildInfo   BuildInfo
-	AuthService *auth.Service
-	BookService *books.Service
+	BuildInfo      BuildInfo
+	AuthService    *auth.Service
+	BookService    *books.Service
+	ReadingService *reading.Service
 }
 
 const adminNavigationScript = `<script>
@@ -131,6 +133,9 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("GET /admin/settings", settingsPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/filename-template", updateFilenameTemplate(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/password", updatePassword(opts.AuthService))
+	}
+	if opts.AuthService != nil && opts.ReadingService != nil {
+		registerReadingRoutes(mux, opts.AuthService, opts.ReadingService)
 	}
 	return mux
 }
