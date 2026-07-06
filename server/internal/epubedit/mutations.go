@@ -178,7 +178,99 @@ func (w *Workspace) UpdateChapter(id, source, title string) error {
 	if err := os.WriteFile(filepath.Join(w.root, filepath.FromSlash(resource)), []byte(source), 0o644); err != nil {
 		return fmt.Errorf("write chapter source: %w", err)
 	}
+	if strings.TrimSpace(title) != "" {
+		if err := w.updateNavigationTitle(resource, strings.TrimSpace(title)); err != nil {
+			return err
+		}
+	}
 	return w.inspect()
+}
+
+func (w *Workspace) updateNavigationTitle(chapterResource, title string) error {
+	opf, err := w.readOPF()
+	if err != nil {
+		return err
+	}
+	var pkg packageDocument
+	if err := decodeXML(opf, &pkg); err != nil {
+		return invalid("parse package document", err)
+	}
+	for _, item := range pkg.Manifest {
+		if !containsWord(item.Properties, "nav") {
+			continue
+		}
+		resource, err := safeReference(path.Dir(w.opfPath), item.Href)
+		if err != nil {
+			return err
+		}
+		filename := filepath.Join(w.root, filepath.FromSlash(resource))
+		body, err := os.ReadFile(filename)
+		if err != nil {
+			return invalid("read navigation document", err)
+		}
+		updated, changed, err := rewriteNavigationTitle(body, resource, chapterResource, title)
+		if err != nil {
+			return err
+		}
+		if changed {
+			if err := os.WriteFile(filename, updated, 0o644); err != nil {
+				return fmt.Errorf("write navigation document: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func rewriteNavigationTitle(data []byte, navResource, chapterResource, title string) ([]byte, bool, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	var output bytes.Buffer
+	encoder := xml.NewEncoder(&output)
+	linkDepth := 0
+	matched := false
+	changed := false
+	wrote := false
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, false, invalid("parse navigation document", err)
+		}
+		switch value := token.(type) {
+		case xml.StartElement:
+			if linkDepth > 0 {
+				linkDepth++
+			} else if value.Name.Local == "a" {
+				href := attribute(value, "href")
+				resolved, resolveErr := safeReference(path.Dir(navResource), href)
+				if resolveErr == nil && resolved == chapterResource {
+					linkDepth = 1
+					matched = true
+					wrote = false
+				}
+			}
+		case xml.CharData:
+			if linkDepth > 0 && !wrote {
+				token = xml.CharData([]byte(title))
+				wrote = true
+				changed = true
+			} else if linkDepth > 0 {
+				token = xml.CharData(nil)
+			}
+		case xml.EndElement:
+			if linkDepth > 0 {
+				linkDepth--
+			}
+		}
+		if err := encoder.EncodeToken(token); err != nil {
+			return nil, false, err
+		}
+	}
+	if err := encoder.Flush(); err != nil {
+		return nil, false, err
+	}
+	return output.Bytes(), matched && changed, nil
 }
 
 func validateXHTMLSource(data []byte, resource string) error {
@@ -531,9 +623,26 @@ func (w *Workspace) ReplaceCover(data []byte, limits CoverLimits) (CoverInfo, er
 		}
 	}
 	if cover.ID == "" {
+		coverID := ""
+		for _, meta := range pkg.Metadata.Meta {
+			if strings.EqualFold(meta.Name, "cover") {
+				coverID = strings.TrimSpace(meta.Content)
+				break
+			}
+		}
+		if coverID != "" {
+			for _, item := range pkg.Manifest {
+				if item.ID == coverID {
+					cover = item
+					break
+				}
+			}
+		}
+	}
+	if cover.ID == "" {
 		ext := map[string]string{"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[mediaType]
 		cover = manifestItem{ID: "cover-image", Href: "images/cover." + ext, MediaType: mediaType, Properties: "cover-image"}
-		rewritten, err := addManifestOnly(opf, cover)
+		rewritten, err := addCoverManifest(opf, cover, strings.HasPrefix(strings.TrimSpace(pkg.Version), "2"))
 		if err != nil {
 			return CoverInfo{}, err
 		}
@@ -562,11 +671,12 @@ func (w *Workspace) ReplaceCover(data []byte, limits CoverLimits) (CoverInfo, er
 	return CoverInfo{Data: append([]byte(nil), data...), MediaType: mediaType, Width: config.Width, Height: config.Height, Href: cover.Href}, nil
 }
 
-func addManifestOnly(data []byte, item manifestItem) ([]byte, error) {
+func addCoverManifest(data []byte, item manifestItem, epub2 bool) ([]byte, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	var output bytes.Buffer
 	encoder := xml.NewEncoder(&output)
 	found := false
+	metadataFound := !epub2
 	for {
 		token, err := decoder.Token()
 		if err != nil {
@@ -575,8 +685,18 @@ func addManifestOnly(data []byte, item manifestItem) ([]byte, error) {
 			}
 			return nil, err
 		}
+		if end, ok := token.(xml.EndElement); ok && end.Name.Local == "metadata" && epub2 {
+			start := xml.StartElement{Name: xml.Name{Local: "meta"}, Attr: []xml.Attr{{Name: xml.Name{Local: "name"}, Value: "cover"}, {Name: xml.Name{Local: "content"}, Value: item.ID}}}
+			_ = encoder.EncodeToken(start)
+			_ = encoder.EncodeToken(start.End())
+			metadataFound = true
+		}
 		if end, ok := token.(xml.EndElement); ok && end.Name.Local == "manifest" {
-			start := xml.StartElement{Name: xml.Name{Local: "item"}, Attr: []xml.Attr{{Name: xml.Name{Local: "id"}, Value: item.ID}, {Name: xml.Name{Local: "href"}, Value: item.Href}, {Name: xml.Name{Local: "media-type"}, Value: item.MediaType}, {Name: xml.Name{Local: "properties"}, Value: item.Properties}}}
+			attrs := []xml.Attr{{Name: xml.Name{Local: "id"}, Value: item.ID}, {Name: xml.Name{Local: "href"}, Value: item.Href}, {Name: xml.Name{Local: "media-type"}, Value: item.MediaType}}
+			if !epub2 {
+				attrs = append(attrs, xml.Attr{Name: xml.Name{Local: "properties"}, Value: item.Properties})
+			}
+			start := xml.StartElement{Name: xml.Name{Local: "item"}, Attr: attrs}
 			_ = encoder.EncodeToken(start)
 			_ = encoder.EncodeToken(start.End())
 			found = true
@@ -585,8 +705,8 @@ func addManifestOnly(data []byte, item manifestItem) ([]byte, error) {
 			return nil, err
 		}
 	}
-	if !found {
-		return nil, invalid("manifest not found", nil)
+	if !found || !metadataFound {
+		return nil, invalid("manifest or metadata not found", nil)
 	}
 	_ = encoder.Flush()
 	return output.Bytes(), nil

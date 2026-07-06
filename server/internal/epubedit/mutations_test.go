@@ -132,6 +132,93 @@ func TestReplaceCoverDecodesContentAndAddsManifestItem(t *testing.T) {
 	}
 }
 
+func TestUpdateChapterTitleUpdatesEPUB3Navigation(t *testing.T) {
+	workspace, err := Open(testEPUB(t, testEPUBOptions{withNav: true}), Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	source, err := workspace.ChapterSource("chapter-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.UpdateChapter("chapter-one", source, "Renamed"); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, err := workspace.Rebuild()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nav := string(zipBody(t, rebuilt, "OPS/nav.xhtml"))
+	if !strings.Contains(nav, ">Renamed</a>") {
+		t.Fatalf("navigation title not updated: %s", nav)
+	}
+}
+
+func TestReplaceCoverUsesEPUB2CoverMetadata(t *testing.T) {
+	var imageBody bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	if err := png.Encode(&imageBody, img); err != nil {
+		t.Fatal(err)
+	}
+	data := rawZIP(t, map[string]string{
+		"mimetype":               "application/epub+zip",
+		"META-INF/container.xml": `<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/book.opf"/></rootfiles></container>`,
+		"OEBPS/book.opf":         `<package xmlns="http://www.idpf.org/2007/opf" version="2.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Old</dc:title><dc:creator>A</dc:creator><meta name="cover" content="legacy-cover"/></metadata><manifest><item id="legacy-cover" href="images/old.jpg" media-type="image/jpeg"/><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/></spine></package>`,
+		"OEBPS/one.xhtml":        `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body><p>x</p></body></html>`,
+		"OEBPS/images/old.jpg":   "old",
+	})
+	workspace, err := Open(data, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	cover, err := workspace.ReplaceCover(imageBody.Bytes(), CoverLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cover.Href != "images/old.jpg" {
+		t.Fatalf("cover href=%q", cover.Href)
+	}
+	rebuilt, err := workspace.Rebuild()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opf := string(zipBody(t, rebuilt, "OEBPS/book.opf"))
+	if !strings.Contains(opf, `id="legacy-cover"`) || !strings.Contains(opf, `media-type="image/png"`) {
+		t.Fatalf("EPUB2 cover metadata lost: %s", opf)
+	}
+}
+
+func TestReplaceCoverCreatesEPUB2CoverMetadataWhenAbsent(t *testing.T) {
+	var imageBody bytes.Buffer
+	if err := png.Encode(&imageBody, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	data := rawZIP(t, map[string]string{
+		"mimetype":               "application/epub+zip",
+		"META-INF/container.xml": `<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>`,
+		"book.opf":               `<package xmlns="http://www.idpf.org/2007/opf" version="2.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Old</dc:title></metadata><manifest><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/></spine></package>`,
+		"one.xhtml":              `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body><p>x</p></body></html>`,
+	})
+	workspace, err := Open(data, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workspace.Close()
+	if _, err := workspace.ReplaceCover(imageBody.Bytes(), CoverLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, err := workspace.Rebuild()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opf := string(zipBody(t, rebuilt, "book.opf"))
+	if !strings.Contains(opf, `name="cover"`) || !strings.Contains(opf, `content="cover-image"`) {
+		t.Fatalf("EPUB2 cover meta not created: %s", opf)
+	}
+}
+
 func openTestEPUB(t *testing.T) *Workspace {
 	t.Helper()
 	workspace, err := Open(testEPUB(t, testEPUBOptions{}), Limits{})

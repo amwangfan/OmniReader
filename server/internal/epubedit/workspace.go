@@ -56,6 +56,13 @@ type manifestItem struct {
 }
 
 type packageDocument struct {
+	Version  string `xml:"version,attr"`
+	Metadata struct {
+		Meta []struct {
+			Name    string `xml:"name,attr"`
+			Content string `xml:"content,attr"`
+		} `xml:"meta"`
+	} `xml:"metadata"`
 	Manifest []manifestItem `xml:"manifest>item"`
 	Spine    []struct {
 		IDRef string `xml:"idref,attr"`

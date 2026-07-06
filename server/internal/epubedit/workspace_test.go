@@ -101,6 +101,7 @@ type testEPUBOptions struct {
 	container  string
 	spine      string
 	chapterOne string
+	withNav    bool
 }
 
 func testEPUB(t *testing.T, opts testEPUBOptions) []byte {
@@ -117,13 +118,19 @@ func testEPUB(t *testing.T, opts testEPUBOptions) []byte {
 	if one == "" {
 		one = `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body><h1>One</h1><p>Hello <em>world</em>.</p></body></html>`
 	}
-	return rawZIP(t, map[string]string{
+	manifestExtra := ""
+	files := map[string]string{
 		"mimetype":               "application/epub+zip",
 		"META-INF/container.xml": container,
-		"OPS/content.opf":        `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Example</dc:title><dc:creator>Writer</dc:creator><dc:language>en</dc:language><meta property="custom:test">keep</meta></metadata><manifest><item id="chapter-one" href="text/one.xhtml" media-type="application/xhtml+xml"/><item id="chapter-two" href="text/two.xhtml" media-type="application/xhtml+xml"/></manifest><spine>` + spine + `</spine></package>`,
 		"OPS/text/one.xhtml":     one,
 		"OPS/text/two.xhtml":     `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Two</title></head><body><p>Second</p></body></html>`,
-	})
+	}
+	if opts.withNav {
+		manifestExtra = `<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>`
+		files["OPS/nav.xhtml"] = `<html xmlns="http://www.w3.org/1999/xhtml"><body><nav><ol><li><a href="text/one.xhtml">One</a></li><li><a href="text/two.xhtml">Two</a></li></ol></nav></body></html>`
+	}
+	files["OPS/content.opf"] = `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Example</dc:title><dc:creator>Writer</dc:creator><dc:language>en</dc:language><meta property="custom:test">keep</meta></metadata><manifest><item id="chapter-one" href="text/one.xhtml" media-type="application/xhtml+xml"/><item id="chapter-two" href="text/two.xhtml" media-type="application/xhtml+xml"/>` + manifestExtra + `</manifest><spine>` + spine + `</spine></package>`
+	return rawZIP(t, files)
 }
 
 func rawZIP(t *testing.T, files map[string]string) []byte {
