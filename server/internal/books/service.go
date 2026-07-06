@@ -254,7 +254,15 @@ func (s *Service) UpdateDetails(ctx context.Context, id string, input UpdateInpu
 		}
 	}
 	now := s.now()
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		if newStorageKey != book.StorageKey {
+			_ = s.store.Rename(ctx, newStorageKey, book.StorageKey)
+		}
+		return Book{}, fmt.Errorf("begin update book details: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 UPDATE books
 SET title = ?, author = ?, storage_key = ?, updated_at = ?
 WHERE id = ? AND archived_at IS NULL
@@ -264,6 +272,27 @@ WHERE id = ? AND archived_at IS NULL
 			_ = s.store.Rename(ctx, newStorageKey, book.StorageKey)
 		}
 		return Book{}, fmt.Errorf("update book details: %w", err)
+	}
+	if newStorageKey != book.StorageKey {
+		result, err := tx.ExecContext(ctx, `UPDATE book_revisions SET storage_key = ? WHERE book_id = ? AND revision = ?`, newStorageKey, id, formatTime(book.ContentRevision.Time))
+		affected := int64(0)
+		if err == nil {
+			affected, err = result.RowsAffected()
+		}
+		if err != nil {
+			_ = s.store.Rename(ctx, newStorageKey, book.StorageKey)
+			return Book{}, fmt.Errorf("update current revision key: %w", err)
+		}
+		if affected != 1 {
+			_ = s.store.Rename(ctx, newStorageKey, book.StorageKey)
+			return Book{}, fmt.Errorf("update current revision key: affected %d rows", affected)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		if newStorageKey != book.StorageKey {
+			_ = s.store.Rename(ctx, newStorageKey, book.StorageKey)
+		}
+		return Book{}, fmt.Errorf("commit update book details: %w", err)
 	}
 	return s.Get(ctx, id)
 }

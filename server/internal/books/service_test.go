@@ -140,6 +140,18 @@ func TestUpdateDetailsRenamesStoredFile(t *testing.T) {
 		t.Fatalf("renamed book should open: %v", err)
 	}
 	_ = reader.Close()
+	revisions, err := service.ListRevisions(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revisions) != 1 || revisions[0].StorageKey != updated.StorageKey {
+		t.Fatalf("renamed current revision key = %#v, want %q", revisions, updated.StorageKey)
+	}
+	revisionReader, err := service.store.Open(ctx, revisions[0].StorageKey)
+	if err != nil {
+		t.Fatalf("renamed revision object should open: %v", err)
+	}
+	_ = revisionReader.Close()
 }
 
 func TestUpdateDetailsRequiresTitle(t *testing.T) {
