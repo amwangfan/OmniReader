@@ -3,6 +3,7 @@ package books
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -30,6 +31,13 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 	wantRevision := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
 	if !book.ContentRevision.Equal(wantRevision) {
 		t.Fatalf("ContentRevision = %v, want %v", book.ContentRevision, wantRevision)
+	}
+	encoded, err := json.Marshal(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"contentRevision":"2026-07-04T10:00:00.000000000Z"`) {
+		t.Fatalf("book JSON does not preserve fixed revision precision: %s", encoded)
 	}
 	if !strings.HasSuffix(book.StorageKey, "The Parsed Book-The Parsed Author.epub") {
 		t.Fatalf("storage key = %q", book.StorageKey)

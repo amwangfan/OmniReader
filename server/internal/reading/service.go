@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const fixedUTCTimeLayout = "2006-01-02T15:04:05.000000000Z"
+
 var (
 	ErrNotFound       = errors.New("not found")
 	ErrDeviceDisabled = errors.New("device disabled")
@@ -173,7 +175,7 @@ func (s *Service) PutProgress(ctx context.Context, input ProgressInput) (Progres
 		return ProgressResult{}, err
 	}
 	parsedRevision, _ := time.Parse(time.RFC3339Nano, input.Locator.ContentRevision)
-	input.Locator.ContentRevision = parsedRevision.UTC().Format(time.RFC3339Nano)
+	input.Locator.ContentRevision = parsedRevision.UTC().Format(fixedUTCTimeLayout)
 	locatorJSON, err := json.Marshal(input.Locator)
 	if err != nil {
 		return ProgressResult{}, validation("locator cannot be encoded")
@@ -464,12 +466,12 @@ func validateProgressInput(input ProgressInput, now time.Time) error {
 	if l.Version != 1 {
 		return validation("locator version must be 1")
 	}
-	parsedRevision, err := time.Parse(time.RFC3339Nano, l.ContentRevision)
-	if err != nil {
+	if _, err := time.Parse(time.RFC3339Nano, l.ContentRevision); err != nil {
 		return validation("locator contentRevision must be RFC3339")
 	}
-	if parsedRevision.Nanosecond() == 0 {
-		return validation("locator contentRevision must include non-zero subsecond precision")
+	timeSeparator := strings.IndexByte(l.ContentRevision, 'T')
+	if timeSeparator < 0 || strings.IndexAny(l.ContentRevision[timeSeparator+1:], ".,") < 0 {
+		return validation("locator contentRevision must include a fractional second component")
 	}
 	if l.ChapterIndex < 0 || l.BlockIndex < 0 || l.CharOffset < 0 {
 		return validation("locator indexes must be nonnegative")
@@ -534,7 +536,7 @@ func parseTime(value string) (time.Time, error) {
 }
 
 func formatTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return value.UTC().Format(fixedUTCTimeLayout)
 }
 
 func validation(message string) error {

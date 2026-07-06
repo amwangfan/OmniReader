@@ -12,6 +12,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const fixedUTCTimeLayout = "2006-01-02T15:04:05.000000000Z"
+
 type Migration struct {
 	Version int
 	Name    string
@@ -162,7 +164,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		return err
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(fixedUTCTimeLayout)
 	for _, migration := range migrations {
 		if applied[migration.Version] {
 			continue

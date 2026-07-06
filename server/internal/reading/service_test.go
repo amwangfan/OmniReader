@@ -137,6 +137,78 @@ func TestProgressRemainsIndependentAndGlobalUsesServerTime(t *testing.T) {
 	}
 }
 
+func TestLatestQueriesOrderFractionalServerTimesChronologically(t *testing.T) {
+	service, clock := testReadingService(t)
+	ctx := context.Background()
+	registerDevices(t, service)
+	clock.value = time.Date(2026, 7, 6, 12, 0, 0, 120000000, time.UTC)
+	if _, err := service.PutProgress(ctx, validProgress(deviceA)); err != nil {
+		t.Fatal(err)
+	}
+	clock.value = time.Date(2026, 7, 6, 12, 0, 0, 123000000, time.UTC)
+	newer := validProgress(deviceB)
+	newer.Locator.BlockIndex = 12
+	if _, err := service.PutProgress(ctx, newer); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.GetProgress(ctx, "book-1", deviceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Global == nil || result.Global.DeviceID != deviceB || result.Global.Locator.BlockIndex != 12 {
+		t.Fatalf("global latest = %#v, want fractional-time-newer device B", result.Global)
+	}
+	var stored []string
+	rows, err := service.db.Query(`SELECT updated_at FROM reading_progress ORDER BY updated_at`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		stored = append(stored, value)
+	}
+	if len(stored) != 2 || stored[0] != "2026-07-06T12:00:00.120000000Z" || stored[1] != "2026-07-06T12:00:00.123000000Z" {
+		t.Fatalf("stored timestamps = %#v", stored)
+	}
+}
+
+func TestDeviceLatestBookOrdersFractionalServerTimesChronologically(t *testing.T) {
+	service, clock := testReadingService(t)
+	ctx := context.Background()
+	registerDevices(t, service)
+	revision := "2026-07-06T00:00:00.123456789Z"
+	if _, err := service.db.Exec(`INSERT INTO books (id,title,format,storage_key,file_size,checksum,content_revision,created_at,updated_at) VALUES ('book-2','Second Book','epub','book2.epub',1,'sum',?,?,?)`, revision, revision, revision); err != nil {
+		t.Fatal(err)
+	}
+	clock.value = time.Date(2026, 7, 6, 12, 0, 0, 120000000, time.UTC)
+	if _, err := service.PutProgress(ctx, validProgress(deviceA)); err != nil {
+		t.Fatal(err)
+	}
+	clock.value = time.Date(2026, 7, 6, 12, 0, 0, 123000000, time.UTC)
+	input := validProgress(deviceA)
+	input.BookID = "book-2"
+	if _, err := service.PutProgress(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := service.ListDevices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary *DeviceSummary
+	for i := range devices {
+		if devices[i].ID == deviceA {
+			summary = &devices[i]
+		}
+	}
+	if summary == nil || summary.LatestBook == nil || summary.LatestBook.BookID != "book-2" {
+		t.Fatalf("device latest = %#v, want book-2", summary)
+	}
+}
+
 func TestDisabledDeviceCannotPutProgress(t *testing.T) {
 	service, _ := testReadingService(t)
 	ctx := context.Background()
@@ -217,13 +289,21 @@ func TestProgressRevisionMismatchAndValidation(t *testing.T) {
 	}
 }
 
-func TestLocatorRejectsRevisionWithoutSubsecondPrecision(t *testing.T) {
+func TestLocatorRequiresFractionalSyntaxButAllowsZeroNanoseconds(t *testing.T) {
 	service, _ := testReadingService(t)
 	registerDevices(t, service)
 	input := validProgress(deviceA)
 	input.Locator.ContentRevision = "2026-07-06T00:00:00Z"
 	if _, err := service.PutProgress(context.Background(), input); !errors.Is(err, ErrValidation) {
 		t.Fatalf("PutProgress error = %v, want validation", err)
+	}
+	input.Locator.ContentRevision = "2026-07-06T00:00:00.000Z"
+	result, err := service.PutProgress(context.Background(), input)
+	if err != nil {
+		t.Fatalf("fractional whole-second revision rejected: %v", err)
+	}
+	if result.Device == nil || result.Device.Locator.ContentRevision != "2026-07-06T00:00:00.000000000Z" {
+		t.Fatalf("canonical revision = %#v", result.Device)
 	}
 }
 

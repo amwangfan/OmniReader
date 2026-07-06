@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,8 @@ import (
 	"github.com/amwangfan/omnireader/server/internal/storage"
 )
 
+const fixedUTCTimeLayout = "2006-01-02T15:04:05.000000000Z"
+
 type Service struct {
 	db    *sql.DB
 	store storage.Store
@@ -28,19 +31,27 @@ type Options struct {
 	Now func() time.Time
 }
 
+type RevisionTime struct {
+	time.Time
+}
+
+func (value RevisionTime) MarshalJSON() ([]byte, error) {
+	return json.Marshal(formatTime(value.Time))
+}
+
 type Book struct {
-	ID              string     `json:"id"`
-	Title           string     `json:"title"`
-	Author          string     `json:"author"`
-	Filename        string     `json:"filename"`
-	Format          string     `json:"format"`
-	StorageKey      string     `json:"-"`
-	FileSize        int64      `json:"fileSize"`
-	Checksum        string     `json:"checksum"`
-	ContentRevision time.Time  `json:"contentRevision"`
-	ArchivedAt      *time.Time `json:"archivedAt,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
+	ID              string       `json:"id"`
+	Title           string       `json:"title"`
+	Author          string       `json:"author"`
+	Filename        string       `json:"filename"`
+	Format          string       `json:"format"`
+	StorageKey      string       `json:"-"`
+	FileSize        int64        `json:"fileSize"`
+	Checksum        string       `json:"checksum"`
+	ContentRevision RevisionTime `json:"contentRevision"`
+	ArchivedAt      *time.Time   `json:"archivedAt,omitempty"`
+	CreatedAt       time.Time    `json:"createdAt"`
+	UpdatedAt       time.Time    `json:"updatedAt"`
 }
 
 type CreateInput struct {
@@ -122,7 +133,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
 		StorageKey:      storageKey,
 		FileSize:        int64(len(data)),
 		Checksum:        checksum(data),
-		ContentRevision: now,
+		ContentRevision: RevisionTime{Time: now},
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -130,7 +141,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO books (id, title, author, format, storage_key, file_size, checksum, content_revision, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, book.ID, book.Title, book.Author, book.Format, book.StorageKey, book.FileSize, book.Checksum, formatTime(book.ContentRevision), formatTime(book.CreatedAt), formatTime(book.UpdatedAt))
+`, book.ID, book.Title, book.Author, book.Format, book.StorageKey, book.FileSize, book.Checksum, formatTime(book.ContentRevision.Time), formatTime(book.CreatedAt), formatTime(book.UpdatedAt))
 	if err != nil {
 		_ = s.store.Delete(ctx, storageKey)
 		return Book{}, fmt.Errorf("insert book: %w", err)
@@ -331,7 +342,7 @@ func scanBook(row scanner) (Book, error) {
 		book.ArchivedAt = &parsed
 	}
 	var errParse error
-	book.ContentRevision, errParse = time.Parse(time.RFC3339Nano, contentRevision)
+	book.ContentRevision.Time, errParse = time.Parse(time.RFC3339Nano, contentRevision)
 	if errParse != nil {
 		return Book{}, fmt.Errorf("parse content_revision: %w", errParse)
 	}
@@ -353,7 +364,7 @@ func checksum(data []byte) string {
 }
 
 func formatTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return value.UTC().Format(fixedUTCTimeLayout)
 }
 
 func newID(prefix string) string {

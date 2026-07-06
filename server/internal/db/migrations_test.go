@@ -72,6 +72,9 @@ func TestMigrationThreeBackfillsBookContentRevision(t *testing.T) {
 	if revision == legacyTime || parsed.Before(before) || parsed.After(after) {
 		t.Fatalf("content revision = %q, want migration execution time between %v and %v", revision, before, after)
 	}
+	if len(revision) != len("2026-07-06T05:18:26.123456789Z") {
+		t.Fatalf("content revision %q is not fixed 9-digit UTC format", revision)
+	}
 }
 
 func TestOpenAndMigrateEnablesForeignKeys(t *testing.T) {
