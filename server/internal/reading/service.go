@@ -45,15 +45,7 @@ func (s *Service) UpsertDevice(ctx context.Context, input DeviceInput) (Device, 
 		return Device{}, err
 	}
 	now := formatTime(s.now())
-	var disabledAt sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT disabled_at FROM devices WHERE id = ?`, input.ID).Scan(&disabledAt)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return Device{}, fmt.Errorf("read device: %w", err)
-	}
-	if disabledAt.Valid {
-		return Device{}, ErrDeviceDisabled
-	}
-	_, err = s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 INSERT INTO devices (id, display_name, system_name, platform, manufacturer, model, app_version, last_seen_at, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
@@ -64,9 +56,17 @@ ON CONFLICT(id) DO UPDATE SET
   app_version = excluded.app_version,
   last_seen_at = excluded.last_seen_at,
   updated_at = excluded.updated_at
+WHERE devices.disabled_at IS NULL
 `, input.ID, input.DisplayName, input.SystemName, input.Platform, input.Manufacturer, input.Model, input.AppVersion, now, now, now)
 	if err != nil {
 		return Device{}, fmt.Errorf("upsert device: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return Device{}, fmt.Errorf("inspect device upsert: %w", err)
+	}
+	if changed == 0 {
+		return Device{}, ErrDeviceDisabled
 	}
 	return s.device(ctx, input.ID)
 }
@@ -127,6 +127,10 @@ func (s *Service) ListDevices(ctx context.Context) ([]DeviceSummary, error) {
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate device ids: %w", err)
+	}
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
@@ -165,9 +169,11 @@ func (s *Service) GetDevice(ctx context.Context, id string) (DeviceDetail, error
 }
 
 func (s *Service) PutProgress(ctx context.Context, input ProgressInput) (ProgressResult, error) {
-	if err := validateProgressInput(input); err != nil {
+	if err := validateProgressInput(input, s.now()); err != nil {
 		return ProgressResult{}, err
 	}
+	parsedRevision, _ := time.Parse(time.RFC3339Nano, input.Locator.ContentRevision)
+	input.Locator.ContentRevision = parsedRevision.UTC().Format(time.RFC3339Nano)
 	locatorJSON, err := json.Marshal(input.Locator)
 	if err != nil {
 		return ProgressResult{}, validation("locator cannot be encoded")
@@ -295,11 +301,13 @@ func (s *Service) Dashboard(ctx context.Context) (Dashboard, error) {
 		result.SevenDayReadSeconds += device.SevenDayReadSeconds
 		result.TotalReadSeconds += device.TotalReadSeconds
 	}
-	var revision, title string
+	var title string
 	progress, err := s.progress(ctx, `ORDER BY rp.updated_at DESC, rp.device_id LIMIT 1`)
 	if err == nil {
 		result.Global = &progress
-		_ = s.db.QueryRowContext(ctx, `SELECT title, content_revision FROM books WHERE id = ?`, progress.BookID).Scan(&title, &revision)
+		if err := s.db.QueryRowContext(ctx, `SELECT title FROM books WHERE id = ?`, progress.BookID).Scan(&title); err != nil {
+			return Dashboard{}, fmt.Errorf("read global book title: %w", err)
+		}
 		result.GlobalBookTitle = title
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Dashboard{}, err
@@ -442,7 +450,7 @@ func validateDeviceInput(input DeviceInput) error {
 	return nil
 }
 
-func validateProgressInput(input ProgressInput) error {
+func validateProgressInput(input ProgressInput, now time.Time) error {
 	if strings.TrimSpace(input.BookID) == "" {
 		return validation("bookId is required")
 	}
@@ -475,8 +483,13 @@ func validateProgressInput(input ProgressInput) error {
 		return validation("dailyReadSeconds must not exceed 31 entries")
 	}
 	for date, seconds := range input.DailyReadSeconds {
-		if _, err := parseDate(date); err != nil {
+		parsedDate, err := parseDate(date)
+		if err != nil {
 			return err
+		}
+		today, _ := time.Parse("2006-01-02", now.UTC().Format("2006-01-02"))
+		if parsedDate.Before(today.AddDate(0, 0, -90)) || parsedDate.After(today.AddDate(0, 0, 1)) {
+			return validation("daily reading date must be within the allowed recent window")
 		}
 		if seconds < 0 || seconds > 86400 {
 			return validation("daily read seconds must be between 0 and 86400")

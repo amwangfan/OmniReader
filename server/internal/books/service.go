@@ -247,6 +247,9 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("begin delete book transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM reading_daily WHERE book_id = ?`, id); err != nil {
+		return fmt.Errorf("delete daily reading: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM reading_progress WHERE book_id = ?`, id); err != nil {
 		return fmt.Errorf("delete reading progress: %w", err)
 	}

@@ -150,6 +150,29 @@ func TestUpdateDetailsRequiresTitle(t *testing.T) {
 	}
 }
 
+func TestDeleteRemovesDailyReadingRows(t *testing.T) {
+	ctx := context.Background()
+	service := testService(t, ctx)
+	book, err := service.Create(ctx, CreateInput{Filename: "book.epub", Body: strings.NewReader(string(fixtureEPUB(t, "Book", "Author")))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := "2026-07-04T10:00:00Z"
+	if _, err := service.db.Exec(`INSERT INTO devices (id,display_name,platform,last_seen_at,created_at,updated_at) VALUES ('11111111-1111-4111-8111-111111111111','Device','android',?,?,?)`, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(`INSERT INTO reading_daily (book_id,device_id,reading_date,read_seconds,updated_at) VALUES (?,'11111111-1111-4111-8111-111111111111','2026-07-04',10,?)`, book.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(ctx, book.ID); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := service.db.QueryRow(`SELECT COUNT(*) FROM reading_daily WHERE book_id=?`, book.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("daily rows after delete = %d, err=%v", count, err)
+	}
+}
+
 func testService(t *testing.T, ctx context.Context) *Service {
 	t.Helper()
 	conn, err := sql.Open("sqlite", ":memory:")

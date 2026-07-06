@@ -56,18 +56,33 @@ func TestMigrationThreeBackfillsBookContentRevision(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, `INSERT INTO books (id,title,format,storage_key,file_size,checksum,created_at,updated_at) VALUES ('book','Book','epub','book.epub',1,'sum',?,?)`, legacyTime, legacyTime); err != nil {
 		t.Fatalf("insert legacy book: %v", err)
 	}
+	before := time.Now().UTC()
 	if err := RunMigrations(ctx, conn); err != nil {
 		t.Fatalf("RunMigrations returned error: %v", err)
 	}
+	after := time.Now().UTC()
 	var revision string
 	if err := conn.QueryRowContext(ctx, `SELECT content_revision FROM books WHERE id='book'`).Scan(&revision); err != nil {
 		t.Fatalf("read content revision: %v", err)
 	}
-	if revision != legacyTime {
-		t.Fatalf("content revision = %q, want %q", revision, legacyTime)
-	}
-	if _, err := time.Parse(time.RFC3339Nano, revision); err != nil {
+	parsed, err := time.Parse(time.RFC3339Nano, revision)
+	if err != nil {
 		t.Fatalf("content revision is not RFC3339Nano: %v", err)
+	}
+	if revision == legacyTime || parsed.Before(before) || parsed.After(after) {
+		t.Fatalf("content revision = %q, want migration execution time between %v and %v", revision, before, after)
+	}
+}
+
+func TestOpenAndMigrateEnablesForeignKeys(t *testing.T) {
+	conn, err := OpenAndMigrate(context.Background(), filepath.Join(t.TempDir(), "foreign.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var enabled int
+	if err := conn.QueryRow(`PRAGMA foreign_keys`).Scan(&enabled); err != nil || enabled != 1 {
+		t.Fatalf("foreign_keys = %d, err = %v", enabled, err)
 	}
 }
 

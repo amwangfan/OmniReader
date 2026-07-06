@@ -90,7 +90,6 @@ CREATE TABLE IF NOT EXISTS settings (
 		Name:    "reading_progress_devices",
 		SQL: `
 ALTER TABLE books ADD COLUMN content_revision TEXT NOT NULL DEFAULT '';
-UPDATE books SET content_revision = updated_at WHERE content_revision = '';
 ALTER TABLE devices ADD COLUMN system_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE devices ADD COLUMN manufacturer TEXT NOT NULL DEFAULT '';
 ALTER TABLE devices ADD COLUMN model TEXT NOT NULL DEFAULT '';
@@ -127,6 +126,10 @@ func OpenAndMigrate(ctx context.Context, databasePath string) (*sql.DB, error) {
 	if err := conn.PingContext(ctx); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("ping sqlite database: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("enable sqlite foreign keys: %w", err)
 	}
 
 	if err := RunMigrations(ctx, conn); err != nil {
@@ -166,6 +169,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		}
 		if _, err := tx.ExecContext(ctx, migration.SQL); err != nil {
 			return fmt.Errorf("apply migration %d %s: %w", migration.Version, migration.Name, err)
+		}
+		if migration.Version == 3 {
+			if _, err := tx.ExecContext(ctx, `UPDATE books SET content_revision = ? WHERE content_revision = ''`, now); err != nil {
+				return fmt.Errorf("backfill book content revisions: %w", err)
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`, migration.Version, migration.Name, now); err != nil {
 			return fmt.Errorf("record migration %d %s: %w", migration.Version, migration.Name, err)

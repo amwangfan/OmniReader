@@ -73,11 +73,36 @@ func TestDeviceFallbackDisableAndDisabledWrites(t *testing.T) {
 	}
 }
 
+func TestDisabledDeviceConditionalUpsertCannotRefresh(t *testing.T) {
+	service, clock := testReadingService(t)
+	ctx := context.Background()
+	registered, err := service.UpsertDevice(ctx, DeviceInput{ID: deviceA, SystemName: "Original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DisableDevice(ctx, deviceA); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Hour)
+	if _, err := service.UpsertDevice(ctx, DeviceInput{ID: deviceA, SystemName: "Changed"}); !errors.Is(err, ErrDeviceDisabled) {
+		t.Fatalf("conditional upsert error = %v", err)
+	}
+	stored, err := service.GetDevice(ctx, deviceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.SystemName != "Original" || !stored.LastSeenAt.Equal(registered.LastSeenAt) {
+		t.Fatalf("disabled row was refreshed: %#v", stored)
+	}
+}
+
 func TestProgressRemainsIndependentAndGlobalUsesServerTime(t *testing.T) {
 	service, clock := testReadingService(t)
 	ctx := context.Background()
 	registerDevices(t, service)
 	first := validProgress(deviceA)
+	futureClient := clock.Now().Add(365 * 24 * time.Hour)
+	first.ClientUpdatedAt = &futureClient
 	first.DailyReadSeconds = map[string]int64{"2026-07-06": 60}
 	resultA, err := service.PutProgress(ctx, first)
 	if err != nil {
@@ -85,6 +110,8 @@ func TestProgressRemainsIndependentAndGlobalUsesServerTime(t *testing.T) {
 	}
 	clock.Advance(time.Second)
 	second := validProgress(deviceB)
+	pastClient := clock.Now().Add(-365 * 24 * time.Hour)
+	second.ClientUpdatedAt = &pastClient
 	second.Locator.BlockIndex = 9
 	second.Locator.BookProgress = .7
 	resultB, err := service.PutProgress(ctx, second)
@@ -107,6 +134,18 @@ func TestProgressRemainsIndependentAndGlobalUsesServerTime(t *testing.T) {
 	readAAgain, _ := service.GetProgress(ctx, "book-1", deviceA)
 	if !readAAgain.Device.UpdatedAt.Equal(readA.Device.UpdatedAt) {
 		t.Fatal("reading global mutated device row")
+	}
+}
+
+func TestDisabledDeviceCannotPutProgress(t *testing.T) {
+	service, _ := testReadingService(t)
+	ctx := context.Background()
+	registerDevices(t, service)
+	if err := service.DisableDevice(ctx, deviceA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PutProgress(ctx, validProgress(deviceA)); !errors.Is(err, ErrDeviceDisabled) {
+		t.Fatalf("PutProgress error = %v, want ErrDeviceDisabled", err)
 	}
 }
 
@@ -174,6 +213,29 @@ func TestProgressRevisionMismatchAndValidation(t *testing.T) {
 	for i, candidate := range bad {
 		if _, err := service.PutProgress(ctx, candidate); !errors.Is(err, ErrValidation) {
 			t.Errorf("invalid case %d error = %v", i, err)
+		}
+	}
+}
+
+func TestDailyDateWindowAndRevisionCanonicalization(t *testing.T) {
+	service, _ := testReadingService(t)
+	ctx := context.Background()
+	registerDevices(t, service)
+	accepted := validProgress(deviceA)
+	accepted.Locator.ContentRevision = "2026-07-06T08:00:00.123456789+08:00"
+	accepted.DailyReadSeconds = map[string]int64{"2026-04-07": 1, "2026-07-07": 2}
+	result, err := service.PutProgress(ctx, accepted)
+	if err != nil {
+		t.Fatalf("boundary PutProgress: %v", err)
+	}
+	if result.Device.Locator.ContentRevision != "2026-07-06T00:00:00.123456789Z" || result.Device.RevisionMismatch {
+		t.Fatalf("revision not canonicalized: %#v", result.Device)
+	}
+	for _, date := range []string{"2026-04-06", "2026-07-08"} {
+		candidate := validProgress(deviceA)
+		candidate.DailyReadSeconds = map[string]int64{date: 1}
+		if _, err := service.PutProgress(ctx, candidate); !errors.Is(err, ErrValidation) {
+			t.Errorf("date %s error = %v, want validation", date, err)
 		}
 	}
 }
