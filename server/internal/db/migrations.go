@@ -176,6 +176,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			if _, err := tx.ExecContext(ctx, `UPDATE books SET content_revision = ? WHERE content_revision = ''`, now); err != nil {
 				return fmt.Errorf("backfill book content revisions: %w", err)
 			}
+			if err := normalizeMigrationThreeTimes(ctx, tx); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`, migration.Version, migration.Name, now); err != nil {
 			return fmt.Errorf("record migration %d %s: %w", migration.Version, migration.Name, err)
@@ -184,6 +187,73 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migrations: %w", err)
+	}
+	return nil
+}
+
+func normalizeMigrationThreeTimes(ctx context.Context, tx *sql.Tx) error {
+	columns := []struct {
+		table  string
+		column string
+	}{
+		{table: "books", column: "created_at"},
+		{table: "books", column: "updated_at"},
+		{table: "books", column: "archived_at"},
+		{table: "devices", column: "last_seen_at"},
+		{table: "devices", column: "created_at"},
+		{table: "devices", column: "updated_at"},
+		{table: "devices", column: "disabled_at"},
+		{table: "reading_progress", column: "updated_at"},
+		{table: "reading_progress", column: "client_updated_at"},
+		{table: "reading_daily", column: "updated_at"},
+	}
+	for _, item := range columns {
+		if err := normalizeTimeColumn(ctx, tx, item.table, item.column); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeTimeColumn(ctx context.Context, tx *sql.Tx, table, column string) error {
+	query := fmt.Sprintf(`SELECT rowid, %s FROM %s WHERE %s IS NOT NULL AND %s <> ''`, column, table, column, column)
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("read legacy timestamps from %s.%s: %w", table, column, err)
+	}
+	type valueAtRow struct {
+		rowID int64
+		value string
+	}
+	var values []valueAtRow
+	for rows.Next() {
+		var item valueAtRow
+		if err := rows.Scan(&item.rowID, &item.value); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan legacy timestamp from %s.%s: %w", table, column, err)
+		}
+		values = append(values, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate legacy timestamps from %s.%s: %w", table, column, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close legacy timestamp rows for %s.%s: %w", table, column, err)
+	}
+	update := fmt.Sprintf(`UPDATE %s SET %s = ? WHERE rowid = ?`, table, column)
+	for _, item := range values {
+		parsed, err := time.Parse(time.RFC3339Nano, item.value)
+		if err != nil {
+			return fmt.Errorf("parse legacy timestamp %s.%s: %w", table, column, err)
+		}
+		normalized := parsed.UTC().Format(fixedUTCTimeLayout)
+		if normalized == item.value {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, update, normalized, item.rowID); err != nil {
+			return fmt.Errorf("normalize legacy timestamp %s.%s: %w", table, column, err)
+		}
 	}
 	return nil
 }

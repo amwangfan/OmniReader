@@ -56,6 +56,18 @@ func TestMigrationThreeBackfillsBookContentRevision(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, `INSERT INTO books (id,title,format,storage_key,file_size,checksum,created_at,updated_at) VALUES ('book','Book','epub','book.epub',1,'sum',?,?)`, legacyTime, legacyTime); err != nil {
 		t.Fatalf("insert legacy book: %v", err)
 	}
+	if _, err := conn.ExecContext(ctx, `
+INSERT INTO devices (id,display_name,platform,last_seen_at,created_at,updated_at) VALUES
+ ('11111111-1111-4111-8111-111111111111','A','android','2026-07-05T01:02:03.12Z','2026-07-05T01:02:03.12Z','2026-07-05T01:02:03.12Z'),
+ ('22222222-2222-4222-8222-222222222222','B','android','2026-07-05T01:02:03.123Z','2026-07-05T01:02:03.123Z','2026-07-05T01:02:03.123Z')`); err != nil {
+		t.Fatalf("insert legacy devices: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+INSERT INTO reading_progress (book_id,device_id,locator,percentage,updated_at) VALUES
+ ('book','11111111-1111-4111-8111-111111111111','{}',0.1,'2026-07-05T01:02:03.12Z'),
+ ('book','22222222-2222-4222-8222-222222222222','{}',0.2,'2026-07-05T01:02:03.123Z')`); err != nil {
+		t.Fatalf("insert legacy progress: %v", err)
+	}
 	before := time.Now().UTC()
 	if err := RunMigrations(ctx, conn); err != nil {
 		t.Fatalf("RunMigrations returned error: %v", err)
@@ -74,6 +86,29 @@ func TestMigrationThreeBackfillsBookContentRevision(t *testing.T) {
 	}
 	if len(revision) != len("2026-07-06T05:18:26.123456789Z") {
 		t.Fatalf("content revision %q is not fixed 9-digit UTC format", revision)
+	}
+	var latestDevice, latestUpdated string
+	if err := conn.QueryRowContext(ctx, `SELECT device_id, updated_at FROM reading_progress ORDER BY updated_at DESC LIMIT 1`).Scan(&latestDevice, &latestUpdated); err != nil {
+		t.Fatalf("read latest migrated progress: %v", err)
+	}
+	if latestDevice != "22222222-2222-4222-8222-222222222222" || latestUpdated != "2026-07-05T01:02:03.123000000Z" {
+		t.Fatalf("latest migrated progress = %s at %s", latestDevice, latestUpdated)
+	}
+	var deviceTimes []string
+	rows, err := conn.QueryContext(ctx, `SELECT last_seen_at || '|' || created_at || '|' || updated_at FROM devices ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		deviceTimes = append(deviceTimes, value)
+	}
+	if len(deviceTimes) != 2 || deviceTimes[0] != "2026-07-05T01:02:03.120000000Z|2026-07-05T01:02:03.120000000Z|2026-07-05T01:02:03.120000000Z" || deviceTimes[1] != "2026-07-05T01:02:03.123000000Z|2026-07-05T01:02:03.123000000Z|2026-07-05T01:02:03.123000000Z" {
+		t.Fatalf("migrated device times = %#v", deviceTimes)
 	}
 }
 
