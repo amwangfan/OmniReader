@@ -273,18 +273,18 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT storage_key, cover_key FROM book_revisions WHERE book_id = ?`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT storage_key, cover_key, content_index_key FROM book_revisions WHERE book_id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("list book revision objects: %w", err)
 	}
 	objectKeys := []string{book.StorageKey, book.CoverKey}
 	for rows.Next() {
-		var storageKey, coverKey string
-		if err := rows.Scan(&storageKey, &coverKey); err != nil {
+		var storageKey, coverKey, contentIndexKey string
+		if err := rows.Scan(&storageKey, &coverKey, &contentIndexKey); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan book revision objects: %w", err)
 		}
-		objectKeys = append(objectKeys, storageKey, coverKey)
+		objectKeys = append(objectKeys, storageKey, coverKey, contentIndexKey)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()

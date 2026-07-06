@@ -410,16 +410,16 @@ func (s *Service) pruneRevisions(ctx context.Context, bookID, current string) {
 			limit = parsed
 		}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT revision,storage_key,cover_key FROM book_revisions WHERE book_id=? AND is_original=0 ORDER BY created_at DESC,revision DESC LIMIT -1 OFFSET ?`, bookID, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT revision,storage_key,cover_key,content_index_key FROM book_revisions WHERE book_id=? AND is_original=0 ORDER BY created_at DESC,revision DESC LIMIT -1 OFFSET ?`, bookID, limit)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
-	type candidate struct{ revision, key, cover string }
+	type candidate struct{ revision, key, cover, index string }
 	var candidates []candidate
 	for rows.Next() {
 		var item candidate
-		if rows.Scan(&item.revision, &item.key, &item.cover) == nil {
+		if rows.Scan(&item.revision, &item.key, &item.cover, &item.index) == nil {
 			candidates = append(candidates, item)
 		}
 	}
@@ -430,7 +430,27 @@ func (s *Service) pruneRevisions(ctx context.Context, bookID, current string) {
 		}
 		affected, _ := result.RowsAffected()
 		if affected == 1 {
-			s.deleteObjects(ctx, []string{item.key, item.cover})
+			s.deleteObjects(ctx, []string{item.key})
+			if item.cover != "" && !s.coverObjectReferenced(ctx, item.cover) {
+				s.deleteObjects(ctx, []string{item.cover})
+			}
+			if item.index != "" && !s.contentIndexReferenced(ctx, item.index) {
+				s.deleteObjects(ctx, []string{item.index})
+			}
 		}
 	}
+}
+
+func (s *Service) coverObjectReferenced(ctx context.Context, key string) bool {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT
+  (SELECT COUNT(*) FROM books WHERE cover_key=?) +
+  (SELECT COUNT(*) FROM book_revisions WHERE cover_key=?)`, key, key).Scan(&count)
+	return err != nil || count > 0
+}
+
+func (s *Service) contentIndexReferenced(ctx context.Context, key string) bool {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM book_revisions WHERE content_index_key=?`, key).Scan(&count)
+	return err != nil || count > 0
 }

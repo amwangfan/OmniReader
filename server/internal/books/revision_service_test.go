@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"strings"
 	"sync"
@@ -198,6 +200,44 @@ func TestInvalidMutationAndDatabaseFailureLeaveCurrentUnchanged(t *testing.T) {
 	}
 	if len(tracker.saved) == 0 || len(tracker.deleted) != len(tracker.saved) {
 		t.Fatalf("saved=%v deleted=%v", tracker.saved, tracker.deleted)
+	}
+}
+
+func TestRevisionPruningKeepsSharedCurrentCoverObject(t *testing.T) {
+	ctx := context.Background()
+	service := testService(t, ctx)
+	book, err := service.Create(ctx, CreateInput{Filename: "book.epub", Body: strings.NewReader(string(fixtureEPUBWithSpine(t, "Original", "Author")))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cover bytes.Buffer
+	if err := png.Encode(&cover, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	covered, err := service.ReplaceContentCover(ctx, book.ID, CoverMutation{BaseRevision: formatTime(book.ContentRevision.Time), Data: cover.Bytes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := formatTime(covered.Book.ContentRevision.Time)
+	coverKey := covered.Book.CoverKey
+	for i := 0; i < 7; i++ {
+		result, err := service.UpdateContentMetadata(ctx, book.ID, MetadataMutation{BaseRevision: base, Metadata: epubedit.Metadata{Title: fmt.Sprintf("Edit %d", i), Author: "Author"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		base = formatTime(result.Book.ContentRevision.Time)
+	}
+	reader, err := service.store.Open(ctx, coverKey)
+	if err != nil {
+		t.Fatalf("shared current cover was pruned: %v", err)
+	}
+	_ = reader.Close()
+	current, err := service.Get(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.CoverKey != coverKey {
+		t.Fatalf("current cover key=%q want %q", current.CoverKey, coverKey)
 	}
 }
 
