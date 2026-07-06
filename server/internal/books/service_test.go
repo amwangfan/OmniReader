@@ -27,6 +27,10 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 	if book.Title != "The Parsed Book" || book.Author != "The Parsed Author" || book.Format != "epub" {
 		t.Fatalf("unexpected book: %#v", book)
 	}
+	wantRevision := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+	if !book.ContentRevision.Equal(wantRevision) {
+		t.Fatalf("ContentRevision = %v, want %v", book.ContentRevision, wantRevision)
+	}
 	if !strings.HasSuffix(book.StorageKey, "The Parsed Book-The Parsed Author.epub") {
 		t.Fatalf("storage key = %q", book.StorageKey)
 	}
@@ -37,6 +41,9 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 	}
 	if len(books) != 1 || books[0].ID != book.ID {
 		t.Fatalf("unexpected books: %#v", books)
+	}
+	if !books[0].ContentRevision.Equal(wantRevision) {
+		t.Fatalf("listed ContentRevision = %v, want %v", books[0].ContentRevision, wantRevision)
 	}
 
 	_, reader, err := service.Open(ctx, book.ID)

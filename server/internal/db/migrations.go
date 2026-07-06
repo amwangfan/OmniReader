@@ -85,6 +85,32 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `,
 	},
+	{
+		Version: 3,
+		Name:    "reading_progress_devices",
+		SQL: `
+ALTER TABLE books ADD COLUMN content_revision TEXT NOT NULL DEFAULT '';
+UPDATE books SET content_revision = updated_at WHERE content_revision = '';
+ALTER TABLE devices ADD COLUMN system_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE devices ADD COLUMN manufacturer TEXT NOT NULL DEFAULT '';
+ALTER TABLE devices ADD COLUMN model TEXT NOT NULL DEFAULT '';
+ALTER TABLE devices ADD COLUMN app_version TEXT NOT NULL DEFAULT '';
+ALTER TABLE devices ADD COLUMN disabled_at TEXT;
+ALTER TABLE reading_progress ADD COLUMN content_revision TEXT NOT NULL DEFAULT '';
+ALTER TABLE reading_progress ADD COLUMN client_updated_at TEXT;
+CREATE TABLE reading_daily (
+  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  reading_date TEXT NOT NULL,
+  read_seconds INTEGER NOT NULL CHECK (read_seconds >= 0),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (book_id, device_id, reading_date)
+);
+CREATE INDEX reading_progress_updated_idx ON reading_progress(updated_at DESC);
+CREATE INDEX reading_daily_device_date_idx ON reading_daily(device_id, reading_date DESC);
+CREATE INDEX reading_daily_book_date_idx ON reading_daily(book_id, reading_date DESC);
+`,
+	},
 }
 
 func OpenAndMigrate(ctx context.Context, databasePath string) (*sql.DB, error) {

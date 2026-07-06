@@ -29,17 +29,18 @@ type Options struct {
 }
 
 type Book struct {
-	ID         string     `json:"id"`
-	Title      string     `json:"title"`
-	Author     string     `json:"author"`
-	Filename   string     `json:"filename"`
-	Format     string     `json:"format"`
-	StorageKey string     `json:"-"`
-	FileSize   int64      `json:"fileSize"`
-	Checksum   string     `json:"checksum"`
-	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	UpdatedAt  time.Time  `json:"updatedAt"`
+	ID              string     `json:"id"`
+	Title           string     `json:"title"`
+	Author          string     `json:"author"`
+	Filename        string     `json:"filename"`
+	Format          string     `json:"format"`
+	StorageKey      string     `json:"-"`
+	FileSize        int64      `json:"fileSize"`
+	Checksum        string     `json:"checksum"`
+	ContentRevision time.Time  `json:"contentRevision"`
+	ArchivedAt      *time.Time `json:"archivedAt,omitempty"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	UpdatedAt       time.Time  `json:"updatedAt"`
 }
 
 type CreateInput struct {
@@ -113,22 +114,23 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
 	}
 
 	book := Book{
-		ID:         id,
-		Title:      title,
-		Author:     author,
-		Filename:   path.Base(storageKey),
-		Format:     "epub",
-		StorageKey: storageKey,
-		FileSize:   int64(len(data)),
-		Checksum:   checksum(data),
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:              id,
+		Title:           title,
+		Author:          author,
+		Filename:        path.Base(storageKey),
+		Format:          "epub",
+		StorageKey:      storageKey,
+		FileSize:        int64(len(data)),
+		Checksum:        checksum(data),
+		ContentRevision: now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO books (id, title, author, format, storage_key, file_size, checksum, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, book.ID, book.Title, book.Author, book.Format, book.StorageKey, book.FileSize, book.Checksum, formatTime(book.CreatedAt), formatTime(book.UpdatedAt))
+INSERT INTO books (id, title, author, format, storage_key, file_size, checksum, content_revision, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, book.ID, book.Title, book.Author, book.Format, book.StorageKey, book.FileSize, book.Checksum, formatTime(book.ContentRevision), formatTime(book.CreatedAt), formatTime(book.UpdatedAt))
 	if err != nil {
 		_ = s.store.Delete(ctx, storageKey)
 		return Book{}, fmt.Errorf("insert book: %w", err)
@@ -139,7 +141,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 
 func (s *Service) List(ctx context.Context) ([]Book, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, title, author, format, storage_key, file_size, checksum, archived_at, created_at, updated_at
+SELECT id, title, author, format, storage_key, file_size, checksum, content_revision, archived_at, created_at, updated_at
 FROM books
 WHERE archived_at IS NULL
 ORDER BY created_at DESC
@@ -165,7 +167,7 @@ ORDER BY created_at DESC
 
 func (s *Service) Get(ctx context.Context, id string) (Book, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, title, author, format, storage_key, file_size, checksum, archived_at, created_at, updated_at
+SELECT id, title, author, format, storage_key, file_size, checksum, content_revision, archived_at, created_at, updated_at
 FROM books
 WHERE id = ? AND archived_at IS NULL
 `, id)
@@ -311,9 +313,10 @@ type scanner interface {
 func scanBook(row scanner) (Book, error) {
 	var book Book
 	var archivedAt sql.NullString
+	var contentRevision string
 	var createdAt string
 	var updatedAt string
-	err := row.Scan(&book.ID, &book.Title, &book.Author, &book.Format, &book.StorageKey, &book.FileSize, &book.Checksum, &archivedAt, &createdAt, &updatedAt)
+	err := row.Scan(&book.ID, &book.Title, &book.Author, &book.Format, &book.StorageKey, &book.FileSize, &book.Checksum, &contentRevision, &archivedAt, &createdAt, &updatedAt)
 	if err != nil {
 		return Book{}, err
 	}
@@ -325,6 +328,10 @@ func scanBook(row scanner) (Book, error) {
 		book.ArchivedAt = &parsed
 	}
 	var errParse error
+	book.ContentRevision, errParse = time.Parse(time.RFC3339Nano, contentRevision)
+	if errParse != nil {
+		return Book{}, fmt.Errorf("parse content_revision: %w", errParse)
+	}
 	book.CreatedAt, errParse = time.Parse(time.RFC3339Nano, createdAt)
 	if errParse != nil {
 		return Book{}, fmt.Errorf("parse created_at: %w", errParse)
