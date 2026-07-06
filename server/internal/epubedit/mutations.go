@@ -11,7 +11,6 @@ import (
 	_ "image/png"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -166,7 +165,7 @@ func (w *Workspace) UpdateChapter(id, source, title string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateXHTMLSource([]byte(source)); err != nil {
+	if err := validateXHTMLSource([]byte(source), resource); err != nil {
 		return err
 	}
 	if strings.TrimSpace(title) != "" {
@@ -182,7 +181,7 @@ func (w *Workspace) UpdateChapter(id, source, title string) error {
 	return w.inspect()
 }
 
-func validateXHTMLSource(data []byte) error {
+func validateXHTMLSource(data []byte, resource string) error {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	var rootSeen bool
 	for {
@@ -212,10 +211,8 @@ func validateXHTMLSource(data []byte) error {
 					return invalid("event handler attributes are not allowed", nil)
 				}
 				if lower == "href" || lower == "src" {
-					reference := strings.TrimSpace(attr.Value)
-					parsed, parseErr := url.Parse(reference)
-					if parseErr != nil || strings.EqualFold(parsed.Scheme, "javascript") || strings.HasPrefix(parsed.Path, "../") {
-						return invalid("unsafe XHTML reference", parseErr)
+					if err := validateXHTMLReference(resource, attr.Value); err != nil {
+						return err
 					}
 				}
 			}
@@ -228,9 +225,6 @@ func validateXHTMLSource(data []byte) error {
 }
 
 func rewriteXHTMLTitle(data []byte, title string) ([]byte, error) {
-	if err := validateXHTMLSource(data); err != nil {
-		return nil, err
-	}
 	escaped := html.EscapeString(title)
 	titlePattern := regexp.MustCompile(`(?is)(<title(?:\s[^>]*)?>).*?(</title\s*>)`)
 	if titlePattern.Match(data) {
@@ -244,16 +238,6 @@ func rewriteXHTMLTitle(data []byte, title string) ([]byte, error) {
 }
 
 func (w *Workspace) AddChapter(title, source string) (Chapter, error) {
-	if err := validateXHTMLSource([]byte(source)); err != nil {
-		return Chapter{}, err
-	}
-	if strings.TrimSpace(title) != "" {
-		updated, err := rewriteXHTMLTitle([]byte(source), strings.TrimSpace(title))
-		if err != nil {
-			return Chapter{}, err
-		}
-		source = string(updated)
-	}
 	existing := make(map[string]bool)
 	for _, chapter := range w.content.Chapters {
 		existing[chapter.ID] = true
@@ -268,6 +252,16 @@ func (w *Workspace) AddChapter(title, source string) (Chapter, error) {
 	resource, err := safeReference(path.Dir(w.opfPath), href)
 	if err != nil {
 		return Chapter{}, err
+	}
+	if err := validateXHTMLSource([]byte(source), resource); err != nil {
+		return Chapter{}, err
+	}
+	if strings.TrimSpace(title) != "" {
+		updated, err := rewriteXHTMLTitle([]byte(source), strings.TrimSpace(title))
+		if err != nil {
+			return Chapter{}, err
+		}
+		source = string(updated)
 	}
 	filename := filepath.Join(w.root, filepath.FromSlash(resource))
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {

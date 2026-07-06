@@ -82,12 +82,15 @@ func TestChapterMutationsRejectUnsafeInvalidOrStaleInput(t *testing.T) {
 	bad := []string{
 		`<html><body>`,
 		`<html xmlns="http://www.w3.org/1999/xhtml"><body><script>x</script></body></html>`,
-		`<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="../../escape.png"/></body></html>`,
+		`<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="../../../escape.png"/></body></html>`,
 	}
 	for _, source := range bad {
 		if err := workspace.UpdateChapter("chapter-one", source, ""); err == nil {
 			t.Fatalf("accepted unsafe source %q", source)
 		}
+	}
+	if err := workspace.UpdateChapter("chapter-one", `<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="../images/inside.png"/></body></html>`, ""); err != nil {
+		t.Fatalf("rejected a parent reference that remains inside the EPUB: %v", err)
 	}
 	if err := workspace.UpdateChapter("stale", `<html/>`, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("stale chapter error = %v", err)

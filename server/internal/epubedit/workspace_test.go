@@ -61,6 +61,7 @@ func TestOpenRejectsMalformedOrExecutableEPUB(t *testing.T) {
 		{"malformed xhtml", testEPUBOptions{chapterOne: `<html><body>`}},
 		{"script", testEPUBOptions{chapterOne: `<html xmlns="http://www.w3.org/1999/xhtml"><body><script>alert(1)</script></body></html>`}},
 		{"event handler", testEPUBOptions{chapterOne: `<html xmlns="http://www.w3.org/1999/xhtml"><body onload="alert(1)">x</body></html>`}},
+		{"escaping reference", testEPUBOptions{chapterOne: `<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="../../../escape.png"/></body></html>`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

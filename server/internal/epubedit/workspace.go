@@ -244,7 +244,7 @@ func (w *Workspace) inspect() error {
 		if item.MediaType != "application/xhtml+xml" {
 			return invalid("spine resource is not XHTML", nil)
 		}
-		title, err := inspectXHTML(body)
+		title, err := inspectXHTML(body, resource)
 		if err != nil {
 			return err
 		}
@@ -329,7 +329,7 @@ func inspectMetadata(data []byte) (Metadata, error) {
 	}
 }
 
-func inspectXHTML(data []byte) (string, error) {
+func inspectXHTML(data []byte, resource string) (string, error) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	var capture string
 	var title string
@@ -352,6 +352,11 @@ func inspectXHTML(data []byte) (string, error) {
 				if strings.HasPrefix(strings.ToLower(attr.Name.Local), "on") {
 					return "", invalid("event handler attributes are not allowed", nil)
 				}
+				if attr.Name.Local == "href" || attr.Name.Local == "src" {
+					if err := validateXHTMLReference(resource, attr.Value); err != nil {
+						return "", err
+					}
+				}
 			}
 			if value.Name.Local == "title" || (title == "" && value.Name.Local == "h1") {
 				capture = value.Name.Local
@@ -366,6 +371,37 @@ func inspectXHTML(data []byte) (string, error) {
 			}
 		}
 	}
+}
+
+func validateXHTMLReference(resource, reference string) error {
+	reference = strings.TrimSpace(reference)
+	if reference == "" || strings.HasPrefix(reference, "#") {
+		return nil
+	}
+	parsed, err := url.Parse(reference)
+	if err != nil {
+		return invalid("unsafe XHTML reference", err)
+	}
+	if parsed.Scheme != "" {
+		switch strings.ToLower(parsed.Scheme) {
+		case "http", "https", "mailto":
+			return nil
+		default:
+			return invalid("unsafe XHTML reference scheme", nil)
+		}
+	}
+	if parsed.Host != "" || strings.HasPrefix(parsed.Path, "/") {
+		return invalid("unsafe XHTML reference", nil)
+	}
+	decoded, err := url.PathUnescape(parsed.Path)
+	if err != nil {
+		return invalid("unsafe XHTML reference", err)
+	}
+	resolved := path.Clean(path.Join(path.Dir(resource), decoded))
+	if resolved == ".." || strings.HasPrefix(resolved, "../") {
+		return invalid("XHTML reference escapes archive root", nil)
+	}
+	return nil
 }
 
 func safeReference(base, href string) (string, error) {
