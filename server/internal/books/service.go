@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/amwangfan/omnireader/server/internal/storage"
@@ -22,9 +23,10 @@ import (
 const fixedUTCTimeLayout = "2006-01-02T15:04:05.000000000Z"
 
 type Service struct {
-	db    *sql.DB
-	store storage.Store
-	now   func() time.Time
+	db        *sql.DB
+	store     storage.Store
+	now       func() time.Time
+	publishMu sync.Mutex
 }
 
 type Options struct {
@@ -48,6 +50,10 @@ type Book struct {
 	StorageKey      string       `json:"-"`
 	FileSize        int64        `json:"fileSize"`
 	Checksum        string       `json:"checksum"`
+	CoverKey        string       `json:"-"`
+	CoverMediaType  string       `json:"coverMediaType,omitempty"`
+	CoverWidth      int          `json:"coverWidth,omitempty"`
+	CoverHeight     int          `json:"coverHeight,omitempty"`
 	ContentRevision RevisionTime `json:"contentRevision"`
 	ArchivedAt      *time.Time   `json:"archivedAt,omitempty"`
 	CreatedAt       time.Time    `json:"createdAt"`
@@ -138,7 +144,13 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
 		UpdatedAt:       now,
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		_ = s.store.Delete(ctx, storageKey)
+		return Book{}, fmt.Errorf("begin create book: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO books (id, title, author, format, storage_key, file_size, checksum, content_revision, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, book.ID, book.Title, book.Author, book.Format, book.StorageKey, book.FileSize, book.Checksum, formatTime(book.ContentRevision.Time), formatTime(book.CreatedAt), formatTime(book.UpdatedAt))
@@ -146,13 +158,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		_ = s.store.Delete(ctx, storageKey)
 		return Book{}, fmt.Errorf("insert book: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO book_revisions (book_id,revision,storage_key,checksum,file_size,change_type,change_summary,is_original,created_at) VALUES (?,?,?,?,?,'upload','Original upload',1,?)`, book.ID, formatTime(book.ContentRevision.Time), book.StorageKey, book.Checksum, book.FileSize, formatTime(book.CreatedAt)); err != nil {
+		_ = s.store.Delete(ctx, storageKey)
+		return Book{}, fmt.Errorf("insert original book revision: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		_ = s.store.Delete(ctx, storageKey)
+		return Book{}, fmt.Errorf("commit create book: %w", err)
+	}
 	_ = metadataErr
 	return book, nil
 }
 
 func (s *Service) List(ctx context.Context) ([]Book, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, title, author, format, storage_key, file_size, checksum, content_revision, archived_at, created_at, updated_at
+SELECT id, title, author, format, storage_key, file_size, checksum, cover_key, cover_media_type, cover_width, cover_height, content_revision, archived_at, created_at, updated_at
 FROM books
 WHERE archived_at IS NULL
 ORDER BY created_at DESC
@@ -178,13 +198,13 @@ ORDER BY created_at DESC
 
 func (s *Service) Get(ctx context.Context, id string) (Book, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, title, author, format, storage_key, file_size, checksum, content_revision, archived_at, created_at, updated_at
+SELECT id, title, author, format, storage_key, file_size, checksum, cover_key, cover_media_type, cover_width, cover_height, content_revision, archived_at, created_at, updated_at
 FROM books
 WHERE id = ? AND archived_at IS NULL
 `, id)
 	book, err := scanBook(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Book{}, errors.New("book not found")
+		return Book{}, ErrNotFound
 	}
 	return book, err
 }
@@ -253,6 +273,24 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	rows, err := s.db.QueryContext(ctx, `SELECT storage_key, cover_key FROM book_revisions WHERE book_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("list book revision objects: %w", err)
+	}
+	objectKeys := []string{book.StorageKey, book.CoverKey}
+	for rows.Next() {
+		var storageKey, coverKey string
+		if err := rows.Scan(&storageKey, &coverKey); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan book revision objects: %w", err)
+		}
+		objectKeys = append(objectKeys, storageKey, coverKey)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate book revision objects: %w", err)
+	}
+	_ = rows.Close()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin delete book transaction: %w", err)
@@ -270,8 +308,15 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete book: %w", err)
 	}
-	if err := s.store.Delete(ctx, book.StorageKey); err != nil {
-		return err
+	seen := make(map[string]bool)
+	for _, key := range objectKeys {
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		if err := s.store.Delete(ctx, key); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -330,7 +375,7 @@ func scanBook(row scanner) (Book, error) {
 	var contentRevision string
 	var createdAt string
 	var updatedAt string
-	err := row.Scan(&book.ID, &book.Title, &book.Author, &book.Format, &book.StorageKey, &book.FileSize, &book.Checksum, &contentRevision, &archivedAt, &createdAt, &updatedAt)
+	err := row.Scan(&book.ID, &book.Title, &book.Author, &book.Format, &book.StorageKey, &book.FileSize, &book.Checksum, &book.CoverKey, &book.CoverMediaType, &book.CoverWidth, &book.CoverHeight, &contentRevision, &archivedAt, &createdAt, &updatedAt)
 	if err != nil {
 		return Book{}, err
 	}

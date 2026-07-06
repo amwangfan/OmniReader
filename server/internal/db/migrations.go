@@ -124,6 +124,9 @@ CREATE TABLE book_revisions (
   revision TEXT NOT NULL,
   storage_key TEXT NOT NULL UNIQUE,
   cover_key TEXT NOT NULL DEFAULT '',
+  cover_media_type TEXT NOT NULL DEFAULT '',
+  cover_width INTEGER NOT NULL DEFAULT 0 CHECK (cover_width >= 0),
+  cover_height INTEGER NOT NULL DEFAULT 0 CHECK (cover_height >= 0),
   content_index_key TEXT NOT NULL DEFAULT '',
   checksum TEXT NOT NULL,
   file_size INTEGER NOT NULL CHECK (file_size >= 0),
@@ -135,8 +138,8 @@ CREATE TABLE book_revisions (
 );
 CREATE UNIQUE INDEX book_revisions_one_original_idx ON book_revisions(book_id) WHERE is_original = 1;
 CREATE INDEX book_revisions_book_created_idx ON book_revisions(book_id, created_at DESC);
-INSERT INTO book_revisions (book_id, revision, storage_key, cover_key, checksum, file_size, change_type, change_summary, is_original, created_at)
-SELECT id, content_revision, storage_key, cover_key, checksum, file_size, 'upload', 'Original upload', 1, created_at
+INSERT INTO book_revisions (book_id, revision, storage_key, cover_key, cover_media_type, cover_width, cover_height, checksum, file_size, change_type, change_summary, is_original, created_at)
+SELECT id, content_revision, storage_key, cover_key, cover_media_type, cover_width, cover_height, checksum, file_size, 'upload', 'Original upload', 1, created_at
 FROM books;
 `,
 	},
