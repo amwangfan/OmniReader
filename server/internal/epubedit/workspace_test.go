@@ -98,10 +98,12 @@ func TestRebuildWritesStoredMimetypeFirstAndRevalidates(t *testing.T) {
 }
 
 type testEPUBOptions struct {
-	container  string
-	spine      string
-	chapterOne string
-	withNav    bool
+	container     string
+	spine         string
+	chapterOne    string
+	withNav       bool
+	manifestExtra string
+	extraFiles    map[string]string
 }
 
 func testEPUB(t *testing.T, opts testEPUBOptions) []byte {
@@ -118,7 +120,7 @@ func testEPUB(t *testing.T, opts testEPUBOptions) []byte {
 	if one == "" {
 		one = `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body><h1>One</h1><p>Hello <em>world</em>.</p></body></html>`
 	}
-	manifestExtra := ""
+	manifestExtra := opts.manifestExtra
 	files := map[string]string{
 		"mimetype":               "application/epub+zip",
 		"META-INF/container.xml": container,
@@ -126,11 +128,34 @@ func testEPUB(t *testing.T, opts testEPUBOptions) []byte {
 		"OPS/text/two.xhtml":     `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Two</title></head><body><p>Second</p></body></html>`,
 	}
 	if opts.withNav {
-		manifestExtra = `<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>`
+		manifestExtra += `<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>`
 		files["OPS/nav.xhtml"] = `<html xmlns="http://www.w3.org/1999/xhtml"><body><nav><ol><li><a href="text/one.xhtml">One</a></li><li><a href="text/two.xhtml">Two</a></li></ol></nav></body></html>`
+	}
+	for name, body := range opts.extraFiles {
+		files[name] = body
 	}
 	files["OPS/content.opf"] = `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Example</dc:title><dc:creator>Writer</dc:creator><dc:language>en</dc:language><meta property="custom:test">keep</meta></metadata><manifest><item id="chapter-one" href="text/one.xhtml" media-type="application/xhtml+xml"/><item id="chapter-two" href="text/two.xhtml" media-type="application/xhtml+xml"/>` + manifestExtra + `</manifest><spine>` + spine + `</spine></package>`
 	return rawZIP(t, files)
+}
+
+func TestOpenValidatesEveryManifestResource(t *testing.T) {
+	tests := []struct {
+		name string
+		opts testEPUBOptions
+	}{
+		{"missing resource", testEPUBOptions{manifestExtra: `<item id="bad" href="missing.xhtml" media-type="application/xhtml+xml"/>`}},
+		{"escaping resource", testEPUBOptions{manifestExtra: `<item id="bad" href="../../../escape.xhtml" media-type="application/xhtml+xml"/>`}},
+		{"non-spine script", testEPUBOptions{manifestExtra: `<item id="bad" href="script.xhtml" media-type="application/xhtml+xml"/>`, extraFiles: map[string]string{"OPS/script.xhtml": `<html xmlns="http://www.w3.org/1999/xhtml"><body><script>x</script></body></html>`}}},
+		{"javascript", testEPUBOptions{manifestExtra: `<item id="bad" href="bad.js" media-type="application/javascript"/>`, extraFiles: map[string]string{"OPS/bad.js": "alert(1)"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if workspace, err := Open(testEPUB(t, tt.opts), Limits{}); err == nil {
+				_ = workspace.Close()
+				t.Fatal("expected rejection")
+			}
+		})
+	}
 }
 
 func rawZIP(t *testing.T, files map[string]string) []byte {

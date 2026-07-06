@@ -229,6 +229,28 @@ func (w *Workspace) inspect() error {
 		if _, exists := items[item.ID]; exists {
 			return invalid("duplicate manifest id", nil)
 		}
+		resource, err := safeReference(path.Dir(opfPath), item.Href)
+		if err != nil {
+			return err
+		}
+		filename := filepath.Join(w.root, filepath.FromSlash(resource))
+		info, err := os.Stat(filename)
+		if err != nil || info.IsDir() {
+			return invalid("manifest resource is missing", err)
+		}
+		mediaType := strings.ToLower(strings.TrimSpace(item.MediaType))
+		if strings.Contains(mediaType, "javascript") || strings.Contains(mediaType, "ecmascript") || strings.EqualFold(path.Ext(resource), ".js") {
+			return invalid("executable manifest resources are not allowed", nil)
+		}
+		if mediaType == "application/xhtml+xml" {
+			body, err := os.ReadFile(filename)
+			if err != nil {
+				return invalid("read XHTML manifest resource", err)
+			}
+			if _, err := inspectXHTML(body, resource); err != nil {
+				return err
+			}
+		}
 		items[item.ID] = item
 	}
 	if len(pkg.Spine) == 0 {
