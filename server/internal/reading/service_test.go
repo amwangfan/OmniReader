@@ -200,7 +200,7 @@ func TestProgressRevisionMismatchAndValidation(t *testing.T) {
 	ctx := context.Background()
 	registerDevices(t, service)
 	input := validProgress(deviceA)
-	input.Locator.ContentRevision = "2026-07-01T00:00:00Z"
+	input.Locator.ContentRevision = "2026-07-01T00:00:00.000000001Z"
 	result, err := service.PutProgress(ctx, input)
 	if err != nil || result.Device == nil || !result.Device.RevisionMismatch {
 		t.Fatalf("revision mismatch = %#v, %v", result, err)
@@ -214,6 +214,26 @@ func TestProgressRevisionMismatchAndValidation(t *testing.T) {
 		if _, err := service.PutProgress(ctx, candidate); !errors.Is(err, ErrValidation) {
 			t.Errorf("invalid case %d error = %v", i, err)
 		}
+	}
+}
+
+func TestLocatorRejectsRevisionWithoutSubsecondPrecision(t *testing.T) {
+	service, _ := testReadingService(t)
+	registerDevices(t, service)
+	input := validProgress(deviceA)
+	input.Locator.ContentRevision = "2026-07-06T00:00:00Z"
+	if _, err := service.PutProgress(context.Background(), input); !errors.Is(err, ErrValidation) {
+		t.Fatalf("PutProgress error = %v, want validation", err)
+	}
+}
+
+func TestDashboardPropagatesDatabaseErrors(t *testing.T) {
+	service, _ := testReadingService(t)
+	if err := service.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Dashboard(context.Background()); err == nil {
+		t.Fatal("Dashboard should propagate database errors")
 	}
 }
 

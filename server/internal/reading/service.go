@@ -287,7 +287,10 @@ func (s *Service) DeviceActivity(ctx context.Context, deviceID, from, to string)
 		activity.Days = append(activity.Days, day)
 		activity.TotalReadSeconds += day.ReadSeconds
 	}
-	return activity, rows.Err()
+	if err := rows.Err(); err != nil {
+		return Activity{}, fmt.Errorf("iterate activity: %w", err)
+	}
+	return activity, nil
 }
 
 func (s *Service) Dashboard(ctx context.Context) (Dashboard, error) {
@@ -461,8 +464,12 @@ func validateProgressInput(input ProgressInput, now time.Time) error {
 	if l.Version != 1 {
 		return validation("locator version must be 1")
 	}
-	if _, err := time.Parse(time.RFC3339Nano, l.ContentRevision); err != nil {
+	parsedRevision, err := time.Parse(time.RFC3339Nano, l.ContentRevision)
+	if err != nil {
 		return validation("locator contentRevision must be RFC3339")
+	}
+	if parsedRevision.Nanosecond() == 0 {
+		return validation("locator contentRevision must include non-zero subsecond precision")
 	}
 	if l.ChapterIndex < 0 || l.BlockIndex < 0 || l.CharOffset < 0 {
 		return validation("locator indexes must be nonnegative")
