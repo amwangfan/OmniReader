@@ -52,19 +52,24 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 		t.Fatal("downloaded body should not be empty")
 	}
 
-	if err := service.Delete(ctx, book.ID); err != nil {
-		t.Fatalf("Delete returned error: %v", err)
+	if err := service.Archive(ctx, book.ID); err != nil {
+		t.Fatalf("Archive returned error: %v", err)
 	}
 	books, err = service.List(ctx)
 	if err != nil {
 		t.Fatalf("List after delete returned error: %v", err)
 	}
 	if len(books) != 0 {
-		t.Fatalf("deleted book should be hidden: %#v", books)
+		t.Fatalf("archived book should be hidden: %#v", books)
 	}
 	if _, _, err := service.Open(ctx, book.ID); err == nil {
-		t.Fatal("deleted book should not open")
+		t.Fatal("archived book should not open through the active library")
 	}
+	stored, err := service.store.Open(ctx, book.StorageKey)
+	if err != nil {
+		t.Fatalf("archived epub should remain recoverable: %v", err)
+	}
+	_ = stored.Close()
 }
 
 func TestCreateRejectsNonEPUB(t *testing.T) {
@@ -73,6 +78,18 @@ func TestCreateRejectsNonEPUB(t *testing.T) {
 
 	if _, err := service.Create(ctx, CreateInput{Filename: "book.pdf", Body: strings.NewReader("pdf")}); err == nil {
 		t.Fatal("expected non-EPUB upload to fail")
+	}
+}
+
+func TestCreateRejectsInvalidEPUBArchive(t *testing.T) {
+	ctx := context.Background()
+	service := testService(t, ctx)
+	_, err := service.Create(ctx, CreateInput{
+		Filename: "not-a-book.epub",
+		Body:     strings.NewReader("not a zip archive"),
+	})
+	if err == nil {
+		t.Fatal("expected invalid epub archive to fail")
 	}
 }
 

@@ -19,7 +19,7 @@ This project is authored and owned by the repository owner's GitHub account. Cod
 
 See [MVP design](docs/design/mvp-design.md).
 
-Android client source lives in [`android/`](android/). It is a native Kotlin + Jetpack Compose APK targeting the first usable OmniReader app flow.
+Android client source lives in the separate [`OmniReader_app`](https://github.com/amwangfan/OmniReader_app) repository. It is a native Kotlin + Jetpack Compose APK targeting the first usable OmniReader app flow.
 
 ## Local development
 
@@ -41,5 +41,14 @@ Current server MVP features:
 - EPUB upload with automatic title/author extraction from EPUB metadata;
 - configurable saved filename pattern such as `{{YYMMDD}}-{{Book}}-{{Author}}-123`;
 - authenticated book list and download APIs;
-- server-side book deletion;
+- safe server-side book archiving that retains the EPUB for later recovery;
 - admin password change from the settings page.
+
+Current synchronization APIs:
+
+- device registration and device listing;
+- latest reading progress download per book;
+- per-device reading progress upload with last-write-wins timestamps;
+- authenticated Android token refresh and logout support.
+
+See [the 2026-07-14 change notes](CHANGELOG.md) for the latest implementation details and remaining limitations.

@@ -18,6 +18,7 @@ import (
 	"github.com/amwangfan/omnireader/server/internal/books"
 	"github.com/amwangfan/omnireader/server/internal/db"
 	"github.com/amwangfan/omnireader/server/internal/storage"
+	syncservice "github.com/amwangfan/omnireader/server/internal/sync"
 	_ "modernc.org/sqlite"
 )
 
@@ -303,6 +304,43 @@ func TestWebLoginCookieAllowsAdminBooksPage(t *testing.T) {
 	}
 }
 
+func TestWebAdminRefreshesExpiredAccessCookie(t *testing.T) {
+	handler := testAuthHandler(t)
+	form := url.Values{}
+	form.Set("username", "admin")
+	form.Set("password", "password")
+	loginReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRes := httptest.NewRecorder()
+	handler.ServeHTTP(loginRes, loginReq)
+	cookies := loginRes.Result().Cookies()
+	if len(cookies) != 2 {
+		t.Fatalf("login cookies = %d, want access and refresh", len(cookies))
+	}
+	var refreshCookie *http.Cookie
+	for _, cookie := range cookies {
+		if cookie.Name == refreshCookieName {
+			refreshCookie = cookie
+		}
+	}
+	if refreshCookie == nil {
+		t.Fatal("missing refresh cookie")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/books", nil)
+	req.AddCookie(&http.Cookie{Name: accessCookieName, Value: "expired"})
+	req.AddCookie(refreshCookie)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("refreshed admin status = %d, body = %s", res.Code, res.Body.String())
+	}
+	if len(res.Result().Cookies()) == 0 || res.Result().Cookies()[0].Name != accessCookieName {
+		t.Fatal("expected a replacement access cookie")
+	}
+}
+
 func TestWebUploadRedirectsBackToLibrary(t *testing.T) {
 	handler := testAuthHandler(t)
 	cookie := webLoginForTest(t, handler)
@@ -455,6 +493,44 @@ func TestSettingsUpdateFilenameTemplateAndPassword(t *testing.T) {
 	}
 }
 
+func TestDeviceAndProgressEndpoints(t *testing.T) {
+	handler := testAuthHandler(t)
+	token := loginForTest(t, handler)
+	bookID := uploadBookForTest(t, handler, token, "Progress Book", "Author")
+
+	deviceReq := httptest.NewRequest(http.MethodPut, "/api/v1/devices/current", strings.NewReader(`{"id":"device_1","displayName":"BOOX","platform":"android"}`))
+	deviceReq.Header.Set("Authorization", "Bearer "+token)
+	deviceRes := httptest.NewRecorder()
+	handler.ServeHTTP(deviceRes, deviceReq)
+	if deviceRes.Code != http.StatusOK {
+		t.Fatalf("device status = %d, body = %s", deviceRes.Code, deviceRes.Body.String())
+	}
+
+	progressReq := httptest.NewRequest(http.MethodPut, "/api/v1/books/"+bookID+"/progress", strings.NewReader(`{"deviceId":"device_1","locator":"chapter:3","percentage":0.5,"updatedAt":"2026-07-14T08:00:00Z"}`))
+	progressReq.Header.Set("Authorization", "Bearer "+token)
+	progressRes := httptest.NewRecorder()
+	handler.ServeHTTP(progressRes, progressReq)
+	if progressRes.Code != http.StatusOK {
+		t.Fatalf("progress status = %d, body = %s", progressRes.Code, progressRes.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/books/"+bookID+"/progress", nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getRes := httptest.NewRecorder()
+	handler.ServeHTTP(getRes, getReq)
+	if getRes.Code != http.StatusOK || !strings.Contains(getRes.Body.String(), "chapter:3") {
+		t.Fatalf("get progress status = %d, body = %s", getRes.Code, getRes.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/devices", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listRes := httptest.NewRecorder()
+	handler.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK || !strings.Contains(listRes.Body.String(), "BOOX") {
+		t.Fatalf("list devices status = %d, body = %s", listRes.Code, listRes.Body.String())
+	}
+}
+
 func testAuthHandler(t *testing.T) http.Handler {
 	t.Helper()
 	ctx := context.Background()
@@ -492,10 +568,19 @@ func testAuthHandler(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("books.NewService returned error: %v", err)
 	}
+	syncService, err := syncservice.NewService(conn, syncservice.Options{
+		Now: func() time.Time {
+			return time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatalf("sync.NewService returned error: %v", err)
+	}
 	return NewHandler(Options{
 		BuildInfo:   BuildInfo{Version: "test"},
 		AuthService: service,
 		BookService: bookService,
+		SyncService: syncService,
 	})
 }
 

@@ -55,6 +55,8 @@ type UpdateInput struct {
 	Filename string
 }
 
+const MaxEPUBSize = 64 << 20
+
 func NewService(db *sql.DB, store storage.Store, opts Options) (*Service, error) {
 	if db == nil {
 		return nil, errors.New("database is required")
@@ -77,17 +79,23 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
 		return Book{}, errors.New("only epub files are supported")
 	}
 
-	data, err := io.ReadAll(input.Body)
+	data, err := io.ReadAll(io.LimitReader(input.Body, MaxEPUBSize+1))
 	if err != nil {
 		return Book{}, fmt.Errorf("read book body: %w", err)
 	}
 	if len(data) == 0 {
 		return Book{}, errors.New("book body is empty")
 	}
+	if len(data) > MaxEPUBSize {
+		return Book{}, errors.New("epub file exceeds 64 MB limit")
+	}
 
 	title := strings.TrimSpace(input.Title)
 	author := strings.TrimSpace(input.Author)
 	metadata, metadataErr := ParseEPUBMetadata(data)
+	if metadataErr != nil {
+		return Book{}, fmt.Errorf("invalid epub: %w", metadataErr)
+	}
 	if title == "" {
 		title = strings.TrimSpace(metadata.Title)
 	}
@@ -133,7 +141,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		_ = s.store.Delete(ctx, storageKey)
 		return Book{}, fmt.Errorf("insert book: %w", err)
 	}
-	_ = metadataErr
 	return book, nil
 }
 
@@ -189,13 +196,20 @@ func (s *Service) Open(ctx context.Context, id string) (Book, io.ReadCloser, err
 }
 
 func (s *Service) Archive(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 UPDATE books
 SET archived_at = ?, updated_at = ?
 WHERE id = ? AND archived_at IS NULL
 `, formatTime(s.now()), formatTime(s.now()), id)
 	if err != nil {
 		return fmt.Errorf("archive book: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read archive result: %w", err)
+	}
+	if affected == 0 {
+		return errors.New("book not found")
 	}
 	return nil
 }

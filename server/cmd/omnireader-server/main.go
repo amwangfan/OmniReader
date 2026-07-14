@@ -16,6 +16,7 @@ import (
 	"github.com/amwangfan/omnireader/server/internal/db"
 	"github.com/amwangfan/omnireader/server/internal/httpapi"
 	"github.com/amwangfan/omnireader/server/internal/storage"
+	syncservice "github.com/amwangfan/omnireader/server/internal/sync"
 )
 
 const version = "dev"
@@ -58,11 +59,16 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	syncService, err := syncservice.NewService(conn, syncservice.Options{})
+	if err != nil {
+		return err
+	}
 
 	handler := httpapi.NewHandler(httpapi.Options{
 		BuildInfo:   httpapi.BuildInfo{Version: version},
 		AuthService: authService,
 		BookService: bookService,
+		SyncService: syncService,
 	})
 	server := &http.Server{
 		Addr:              cfg.Addr,

@@ -11,9 +11,11 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/amwangfan/omnireader/server/internal/auth"
 	"github.com/amwangfan/omnireader/server/internal/books"
+	syncservice "github.com/amwangfan/omnireader/server/internal/sync"
 )
 
 type BuildInfo struct {
@@ -24,7 +26,13 @@ type Options struct {
 	BuildInfo   BuildInfo
 	AuthService *auth.Service
 	BookService *books.Service
+	SyncService *syncservice.Service
 }
+
+const (
+	accessCookieName  = "omnireader_access"
+	refreshCookieName = "omnireader_refresh"
+)
 
 const adminNavigationScript = `<script>
 (() => {
@@ -121,10 +129,16 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("POST /admin/books/{bookID}/delete", webDeleteBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("GET /admin/novels", novelsPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/novels/{bookID}", updateNovel(opts.AuthService, opts.BookService))
-		mux.HandleFunc("GET /admin/sync", syncPage(opts.AuthService))
+		mux.HandleFunc("GET /admin/sync", syncPage(opts.AuthService, opts.SyncService))
 		mux.HandleFunc("GET /admin/settings", settingsPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/filename-template", updateFilenameTemplate(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/password", updatePassword(opts.AuthService))
+	}
+	if opts.AuthService != nil && opts.SyncService != nil {
+		mux.HandleFunc("GET /api/v1/devices", listDevices(opts.AuthService, opts.SyncService))
+		mux.HandleFunc("PUT /api/v1/devices/current", upsertCurrentDevice(opts.AuthService, opts.SyncService))
+		mux.HandleFunc("GET /api/v1/books/{bookID}/progress", getBookProgress(opts.AuthService, opts.SyncService))
+		mux.HandleFunc("PUT /api/v1/books/{bookID}/progress", putBookProgress(opts.AuthService, opts.SyncService))
 	}
 	return mux
 }
@@ -139,7 +153,7 @@ func rootPage(authService *auth.Service) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		if _, err := authService.VerifyBearer(r.Context(), authorizationValue(r)); err == nil {
+		if _, err := authenticateRequest(w, r, authService); err == nil {
 			http.Redirect(w, r, "/admin/books", http.StatusSeeOther)
 			return
 		}
@@ -258,9 +272,95 @@ func me(service *auth.Service) http.HandlerFunc {
 	}
 }
 
+func listDevices(authService *auth.Service, service *syncservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		devices, err := service.ListDevices(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_devices_failed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"devices": devices})
+	}
+}
+
+func upsertCurrentDevice(authService *auth.Service, service *syncservice.Service) http.HandlerFunc {
+	type request struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"displayName"`
+		Platform    string `json:"platform"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		var body request
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+			return
+		}
+		device, err := service.UpsertDevice(r.Context(), syncservice.UpsertDeviceInput{
+			ID: body.ID, DisplayName: body.DisplayName, Platform: body.Platform,
+		})
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"device": device})
+	}
+}
+
+func getBookProgress(authService *auth.Service, service *syncservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		progress, err := service.GetLatestProgress(r.Context(), r.PathValue("bookID"))
+		if errors.Is(err, syncservice.ErrProgressNotFound) {
+			writeJSON(w, http.StatusOK, map[string]any{"progress": nil})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "get_progress_failed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"progress": progress})
+	}
+}
+
+func putBookProgress(authService *auth.Service, service *syncservice.Service) http.HandlerFunc {
+	type request struct {
+		DeviceID   string    `json:"deviceId"`
+		Locator    string    `json:"locator"`
+		Percentage *float64  `json:"percentage"`
+		UpdatedAt  time.Time `json:"updatedAt"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		var body request
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+			return
+		}
+		progress, err := service.PutProgress(r.Context(), syncservice.PutProgressInput{
+			BookID: r.PathValue("bookID"), DeviceID: body.DeviceID, Locator: body.Locator,
+			Percentage: body.Percentage, UpdatedAt: body.UpdatedAt,
+		})
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"progress": progress})
+	}
+}
+
 func loginPage(authService *auth.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, err := authService.VerifyBearer(r.Context(), authorizationValue(r)); err == nil {
+		if _, err := authenticateRequest(w, r, authService); err == nil {
 			http.Redirect(w, r, "/admin/books", http.StatusSeeOther)
 			return
 		}
@@ -491,12 +591,20 @@ func webLogin(service *auth.Service) http.HandlerFunc {
 			return
 		}
 		http.SetCookie(w, &http.Cookie{
-			Name:     "omnireader_access",
+			Name:     accessCookieName,
 			Value:    result.AccessToken,
 			Path:     "/",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 			Expires:  result.ExpiresAt,
+		})
+		http.SetCookie(w, &http.Cookie{
+			Name:     refreshCookieName,
+			Value:    result.RefreshToken,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  result.RefreshExpiresAt,
 		})
 		http.Redirect(w, r, "/admin/books", http.StatusSeeOther)
 	}
@@ -521,7 +629,7 @@ func uploadBook(authService *auth.Service, bookService *books.Service) http.Hand
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		book, err := createBookFromMultipart(r, bookService)
+		book, err := createBookFromMultipart(w, r, bookService)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -556,8 +664,8 @@ func archiveBook(authService *auth.Service, bookService *books.Service) http.Han
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		if err := bookService.Delete(r.Context(), r.PathValue("bookID")); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "delete_failed"})
+		if err := bookService.Archive(r.Context(), r.PathValue("bookID")); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "archive_failed"})
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -798,8 +906,8 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
         </div>
         <div class="actions">
           <a class="button secondary" href="/api/v1/books/{{.ID}}/download">Download</a>
-          <form method="post" action="/admin/books/{{.ID}}/delete" onsubmit="return confirm('Delete this book from the server? This removes the saved EPUB file.');">
-            <button class="danger" type="submit">Delete</button>
+          <form method="post" action="/admin/books/{{.ID}}/delete" onsubmit="return confirm('Archive this book? Existing Android copies and the server file will be retained.');">
+            <button class="danger" type="submit">Archive</button>
           </form>
         </div>
       </article>
@@ -836,7 +944,7 @@ func webUploadBook(authService *auth.Service, bookService *books.Service) http.H
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		if _, err := createBookFromMultipart(r, bookService); err != nil {
+		if _, err := createBookFromMultipart(w, r, bookService); err != nil {
 			http.Redirect(w, r, "/admin/books?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 			return
 		}
@@ -849,11 +957,11 @@ func webDeleteBook(authService *auth.Service, bookService *books.Service) http.H
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		if err := bookService.Delete(r.Context(), r.PathValue("bookID")); err != nil {
-			http.Redirect(w, r, "/admin/books?error="+url.QueryEscape("delete failed"), http.StatusSeeOther)
+		if err := bookService.Archive(r.Context(), r.PathValue("bookID")); err != nil {
+			http.Redirect(w, r, "/admin/books?error="+url.QueryEscape("archive failed"), http.StatusSeeOther)
 			return
 		}
-		http.Redirect(w, r, "/admin/books?status=deleted", http.StatusSeeOther)
+		http.Redirect(w, r, "/admin/books?status=archived", http.StatusSeeOther)
 	}
 }
 
@@ -976,7 +1084,7 @@ func updateNovel(authService *auth.Service, bookService *books.Service) http.Han
 	}
 }
 
-func syncPage(authService *auth.Service) http.HandlerFunc {
+func syncPage(authService *auth.Service, service *syncservice.Service) http.HandlerFunc {
 	page := template.Must(template.New("sync").Parse(`<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1008,7 +1116,7 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
       <a href="/admin/settings">&#35774;&#32622;</a>
     </nav>
     <section class="grid">
-      <article class="panel"><p class="num">0</p><p class="muted">&#24050;&#27880;&#20876;&#35774;&#22791;</p></article>
+      <article class="panel"><p class="num">{{len .Devices}}</p><p class="muted">&#24050;&#27880;&#20876;&#35774;&#22791;</p></article>
       <article class="panel"><p class="num">0</p><p class="muted">&#24453;&#21516;&#27493;&#20219;&#21153;</p></article>
       <article class="panel"><p class="num">0</p><p class="muted">&#19979;&#36733;&#25554;&#20214;</p></article>
     </section>
@@ -1025,8 +1133,17 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
+		var devices []syncservice.Device
+		if service != nil {
+			var err error
+			devices, err = service.ListDevices(r.Context())
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_devices_failed"})
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = page.Execute(w, nil)
+		_ = page.Execute(w, map[string]any{"Devices": devices})
 	}
 }
 
@@ -1139,12 +1256,14 @@ func updatePassword(authService *auth.Service) http.HandlerFunc {
 			http.Redirect(w, r, "/admin/settings?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "omnireader_access", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		http.SetCookie(w, &http.Cookie{Name: accessCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		http.SetCookie(w, &http.Cookie{Name: refreshCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	}
 }
 
-func createBookFromMultipart(r *http.Request, bookService *books.Service) (books.Book, error) {
+func createBookFromMultipart(w http.ResponseWriter, r *http.Request, bookService *books.Service) (books.Book, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, books.MaxEPUBSize+(1<<20))
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		return books.Book{}, errors.New("invalid upload form")
 	}
@@ -1167,7 +1286,7 @@ func createBookFromMultipart(r *http.Request, bookService *books.Service) (books
 }
 
 func requireUser(w http.ResponseWriter, r *http.Request, service *auth.Service) (auth.User, bool) {
-	user, err := service.VerifyBearer(r.Context(), authorizationValue(r))
+	user, err := authenticateRequest(w, r, service)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return auth.User{}, false
@@ -1175,11 +1294,34 @@ func requireUser(w http.ResponseWriter, r *http.Request, service *auth.Service) 
 	return user, true
 }
 
+func authenticateRequest(w http.ResponseWriter, r *http.Request, service *auth.Service) (auth.User, error) {
+	user, err := service.VerifyBearer(r.Context(), authorizationValue(r))
+	if err == nil {
+		return user, nil
+	}
+	if r.Header.Get("Authorization") != "" {
+		return auth.User{}, err
+	}
+	refreshCookie, cookieErr := r.Cookie(refreshCookieName)
+	if cookieErr != nil || refreshCookie.Value == "" {
+		return auth.User{}, err
+	}
+	refreshed, refreshErr := service.Refresh(r.Context(), refreshCookie.Value)
+	if refreshErr != nil {
+		return auth.User{}, refreshErr
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: accessCookieName, Value: refreshed.AccessToken, Path: "/", HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, Expires: refreshed.ExpiresAt,
+	})
+	return service.VerifyBearer(r.Context(), "Bearer "+refreshed.AccessToken)
+}
+
 func authorizationValue(r *http.Request) string {
 	if value := r.Header.Get("Authorization"); value != "" {
 		return value
 	}
-	cookie, err := r.Cookie("omnireader_access")
+	cookie, err := r.Cookie(accessCookieName)
 	if err != nil || cookie.Value == "" {
 		return ""
 	}
@@ -1204,8 +1346,6 @@ func flashMessage(status string, err string) string {
 		return "Upload complete. The EPUB is now in your library."
 	case "archived":
 		return "Book archived. Existing client copies are not deleted automatically."
-	case "deleted":
-		return "Book deleted from the server."
 	default:
 		return ""
 	}
