@@ -6,7 +6,7 @@ The first version targets:
 
 - a lightweight self-hosted server for book storage, progress sync, web administration, and future downloader/plugin integration;
 - a native Android app for BOOX and other Android devices, using Kotlin and Jetpack Compose;
-- EPUB-first reading and synchronization;
+- EPUB-first reading and synchronization, with server-side conversion from common source formats;
 - local filesystem storage first, with an interface reserved for OSS/S3-compatible backends.
 
 The design starts from the existing local repository at:
@@ -38,9 +38,10 @@ The default server data directory is `server\data`, and runtime data is intentio
 Current server MVP features:
 
 - login-protected web admin;
-- EPUB upload with automatic title/author extraction from EPUB metadata;
+- EPUB upload plus Calibre-backed conversion from MOBI, AZW, AZW3, TXT, PDF, HTML, and HTM;
+- automatic title/author extraction from the resulting EPUB metadata;
 - configurable saved filename pattern such as `{{YYMMDD}}-{{Book}}-{{Author}}-123`;
-- authenticated book list and download APIs;
+- authenticated book search, details, conversion-status, and download APIs;
 - safe server-side book archiving that retains the EPUB for later recovery;
 - admin password change from the settings page.
 
@@ -52,3 +53,7 @@ Current synchronization APIs:
 - authenticated Android token refresh and logout support.
 
 See [the 2026-07-14 change notes](CHANGELOG.md) for the latest implementation details and remaining limitations.
+
+Non-EPUB uploads require Calibre's `ebook-convert` command. Set
+`OMNIREADER_EBOOK_CONVERT` when it is not available on `PATH`. EPUB uploads
+continue to work when Calibre is absent. See [temporary Linux deployment](docs/deployment.md).

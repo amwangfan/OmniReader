@@ -24,7 +24,7 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
-	if book.Title != "The Parsed Book" || book.Author != "The Parsed Author" || book.Format != "epub" {
+	if book.Title != "The Parsed Book" || book.Author != "The Parsed Author" || book.Format != "epub" || book.SourceFormat != "epub" {
 		t.Fatalf("unexpected book: %#v", book)
 	}
 	if !strings.HasSuffix(book.StorageKey, "The Parsed Book-The Parsed Author.epub") {
@@ -72,12 +72,30 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 	_ = stored.Close()
 }
 
-func TestCreateRejectsNonEPUB(t *testing.T) {
+func TestCreateRejectsUnsupportedFormat(t *testing.T) {
 	ctx := context.Background()
 	service := testService(t, ctx)
 
-	if _, err := service.Create(ctx, CreateInput{Filename: "book.pdf", Body: strings.NewReader("pdf")}); err == nil {
-		t.Fatal("expected non-EPUB upload to fail")
+	if _, err := service.Create(ctx, CreateInput{Filename: "book.docx", Body: strings.NewReader("docx")}); err == nil {
+		t.Fatal("expected unsupported upload to fail")
+	}
+}
+
+func TestCreateConvertsSupportedSourceToEPUB(t *testing.T) {
+	ctx := context.Background()
+	converted := fixtureEPUB(t, "Converted PDF", "Converted Author")
+	service := testServiceWithConverter(t, ctx, &fakeConverter{output: converted})
+
+	book, err := service.Create(ctx, CreateInput{Filename: "source.pdf", Body: strings.NewReader("%PDF fixture")})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if book.Format != "epub" || book.SourceFormat != "pdf" || book.Title != "Converted PDF" {
+		t.Fatalf("unexpected converted book: %#v", book)
+	}
+	result, err := service.Search(ctx, "converted author")
+	if err != nil || len(result) != 1 || result[0].ID != book.ID {
+		t.Fatalf("search result = %#v, err = %v", result, err)
 	}
 }
 
@@ -161,6 +179,10 @@ func TestUpdateDetailsRequiresTitle(t *testing.T) {
 }
 
 func testService(t *testing.T, ctx context.Context) *Service {
+	return testServiceWithConverter(t, ctx, nil)
+}
+
+func testServiceWithConverter(t *testing.T, ctx context.Context, converter Converter) *Service {
 	t.Helper()
 	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -175,6 +197,7 @@ func testService(t *testing.T, ctx context.Context) *Service {
 		t.Fatalf("NewLocal returned error: %v", err)
 	}
 	service, err := NewService(conn, store, Options{
+		Converter: converter,
 		Now: func() time.Time {
 			return time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
 		},
@@ -183,4 +206,17 @@ func testService(t *testing.T, ctx context.Context) *Service {
 		t.Fatalf("NewService returned error: %v", err)
 	}
 	return service
+}
+
+type fakeConverter struct {
+	output []byte
+	err    error
+}
+
+func (f *fakeConverter) Convert(_ context.Context, _ string, _ []byte) ([]byte, error) {
+	return f.output, f.err
+}
+
+func (f *fakeConverter) Status() ConversionStatus {
+	return ConversionStatus{Engine: "fake", Available: true, SupportedFormats: supportedSourceFormats}
 }

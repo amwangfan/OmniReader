@@ -122,7 +122,9 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("GET /admin", adminHome)
 		mux.HandleFunc("GET /api/v1/books", listBooks(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /api/v1/books", uploadBook(opts.AuthService, opts.BookService))
+		mux.HandleFunc("GET /api/v1/books/{bookID}", getBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("GET /api/v1/books/{bookID}/download", downloadBook(opts.AuthService, opts.BookService))
+		mux.HandleFunc("GET /api/v1/conversion", conversionStatus(opts.AuthService, opts.BookService))
 		mux.HandleFunc("DELETE /api/v1/books/{bookID}", archiveBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("GET /admin/books", booksPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/books/upload", webUploadBook(opts.AuthService, opts.BookService))
@@ -616,12 +618,35 @@ func listBooks(authService *auth.Service, bookService *books.Service) http.Handl
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		result, err := bookService.List(r.Context())
+		result, err := bookService.Search(r.Context(), r.URL.Query().Get("q"))
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_books_failed"})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"books": result})
+	}
+}
+
+func getBook(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		book, err := bookService.Get(r.Context(), r.PathValue("bookID"))
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "book_not_found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"book": book})
+	}
+}
+
+func conversionStatus(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"conversion": bookService.ConversionStatus()})
 	}
 }
 
@@ -632,6 +657,10 @@ func uploadBook(authService *auth.Service, bookService *books.Service) http.Hand
 		}
 		book, err := createBookFromMultipart(w, r, bookService)
 		if err != nil {
+			if errors.Is(err, books.ErrConversionUnavailable) {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "conversion_unavailable", "message": err.Error()})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -886,7 +915,9 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
       <h2>Add a book</h2>
       <form method="post" action="/admin/books/upload" enctype="multipart/form-data">
         <label for="file">EPUB file</label>
-        <input id="file" type="file" name="file" accept=".epub,application/epub+zip" required>
+		<input id="file" type="file" name="file" accept=".epub,.mobi,.azw,.azw3,.txt,.pdf,.html,.htm" required>
+		<p class="meta">EPUB is stored directly. MOBI, AZW, AZW3, TXT, PDF and HTML are converted to EPUB with Calibre.</p>
+		{{if .Conversion.Available}}<p class="meta">Converter status: ready.</p>{{else}}<p class="flash error">Converter unavailable. EPUB uploads still work; install Calibre to enable other formats.</p>{{end}}
         <label for="title">Title override</label>
         <input id="title" type="text" name="title" placeholder="Leave blank to use filename">
         <label for="author">Author</label>
@@ -898,12 +929,17 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
     </section>
     <section class="panel">
       <h2>Library</h2>
+	  <form method="get" action="/admin/books" style="margin-bottom: 16px;">
+		<label for="q">Search title or author</label>
+		<input id="q" type="text" name="q" value="{{.Query}}" placeholder="Search library">
+		<div class="actions"><button type="submit">Search</button>{{if .Query}}<a class="button secondary" href="/admin/books">Clear</a>{{end}}</div>
+	  </form>
       <div class="library">
       {{range .Books}}
       <article class="book">
         <div>
           <h3 class="book-title">{{.Title}}</h3>
-          <p class="meta">{{if .Author}}{{.Author}} &middot; {{end}}{{formatBytes .FileSize}} &middot; {{.Format}}</p>
+		  <p class="meta">{{if .Author}}{{.Author}} &middot; {{end}}{{formatBytes .FileSize}} &middot; EPUB{{if ne .SourceFormat "epub"}} &middot; converted from {{.SourceFormat}}{{end}}</p>
         </div>
         <div class="actions">
           <a class="button secondary" href="/api/v1/books/{{.ID}}/download">Download</a>
@@ -926,7 +962,8 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		result, err := bookService.List(r.Context())
+		query := strings.TrimSpace(r.URL.Query().Get("q"))
+		result, err := bookService.Search(r.Context(), query)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_books_failed"})
 			return
@@ -934,6 +971,8 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = page.Execute(w, map[string]any{
 			"Books":     result,
+			"Query":     query,
+			"Conversion": bookService.ConversionStatus(),
 			"Flash":     flashMessage(r.URL.Query().Get("status"), r.URL.Query().Get("error")),
 			"FlashKind": flashKind(r.URL.Query().Get("error")),
 		})
@@ -1314,8 +1353,8 @@ func clearAuthCookies(w http.ResponseWriter) {
 }
 
 func createBookFromMultipart(w http.ResponseWriter, r *http.Request, bookService *books.Service) (books.Book, error) {
-	r.Body = http.MaxBytesReader(w, r.Body, books.MaxEPUBSize+(1<<20))
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, books.MaxUploadSize+(1<<20))
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		return books.Book{}, errors.New("invalid upload form")
 	}
 	file, header, err := r.FormFile("file")

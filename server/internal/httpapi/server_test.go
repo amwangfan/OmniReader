@@ -225,12 +225,35 @@ func TestBookUploadListDownloadAndArchive(t *testing.T) {
 		t.Fatal("uploaded book id is required")
 	}
 
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/books/"+uploadPayload.Book.ID, nil)
+	detailReq.Header.Set("Authorization", "Bearer "+token)
+	detailRes := httptest.NewRecorder()
+	handler.ServeHTTP(detailRes, detailReq)
+	if detailRes.Code != http.StatusOK || !strings.Contains(detailRes.Body.String(), `"sourceFormat":"epub"`) {
+		t.Fatalf("detail status = %d, body = %s", detailRes.Code, detailRes.Body.String())
+	}
+
 	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/books", nil)
 	listReq.Header.Set("Authorization", "Bearer "+token)
 	listRes := httptest.NewRecorder()
 	handler.ServeHTTP(listRes, listReq)
 	if listRes.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body = %s", listRes.Code, listRes.Body.String())
+	}
+	searchReq := httptest.NewRequest(http.MethodGet, "/api/v1/books?q=Uploaded", nil)
+	searchReq.Header.Set("Authorization", "Bearer "+token)
+	searchRes := httptest.NewRecorder()
+	handler.ServeHTTP(searchRes, searchReq)
+	if searchRes.Code != http.StatusOK || !strings.Contains(searchRes.Body.String(), "Uploaded") {
+		t.Fatalf("search status = %d, body = %s", searchRes.Code, searchRes.Body.String())
+	}
+
+	conversionReq := httptest.NewRequest(http.MethodGet, "/api/v1/conversion", nil)
+	conversionReq.Header.Set("Authorization", "Bearer "+token)
+	conversionRes := httptest.NewRecorder()
+	handler.ServeHTTP(conversionRes, conversionReq)
+	if conversionRes.Code != http.StatusOK || !strings.Contains(conversionRes.Body.String(), "supportedFormats") || !strings.Contains(conversionRes.Body.String(), "mobi") {
+		t.Fatalf("conversion status = %d, body = %s", conversionRes.Code, conversionRes.Body.String())
 	}
 
 	downloadReq := httptest.NewRequest(http.MethodGet, "/api/v1/books/"+uploadPayload.Book.ID+"/download", nil)
@@ -257,6 +280,28 @@ func TestBookUploadListDownloadAndArchive(t *testing.T) {
 	handler.ServeHTTP(downloadAgainRes, downloadAgainReq)
 	if downloadAgainRes.Code != http.StatusNotFound {
 		t.Fatalf("download after delete status = %d", downloadAgainRes.Code)
+	}
+}
+
+func TestNonEPUBUploadReportsUnavailableConverter(t *testing.T) {
+	handler := testAuthHandler(t)
+	token := loginForTest(t, handler)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	file, err := writer.CreateFormFile("file", "sample.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = file.Write([]byte("A sample plain text book."))
+	_ = writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/books", &body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusServiceUnavailable || !strings.Contains(res.Body.String(), "conversion_unavailable") {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
 	}
 }
 
