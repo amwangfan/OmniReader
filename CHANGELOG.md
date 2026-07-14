@@ -14,6 +14,8 @@
 - Registered-device count on the web synchronization page.
 - Automatic web access-cookie renewal through an HttpOnly refresh cookie.
 - A GitHub Actions workflow for running the server test suite on test branches and pull requests.
+- Detailed device activity and recent per-book reading progress on the web synchronization page.
+- A web sign-out action that revokes the browser refresh session and clears both authentication cookies.
 
 ### Changed
 

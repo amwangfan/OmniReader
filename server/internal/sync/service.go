@@ -40,6 +40,12 @@ type Progress struct {
 	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
+type ProgressActivity struct {
+	Progress
+	BookTitle  string `json:"bookTitle"`
+	DeviceName string `json:"deviceName"`
+}
+
 type UpsertDeviceInput struct {
 	ID          string
 	DisplayName string
@@ -199,6 +205,50 @@ WHERE book_id = ? AND device_id = ?
 		return Progress{}, ErrProgressNotFound
 	}
 	return progress, err
+}
+
+func (s *Service) ListRecentProgress(ctx context.Context, limit int) ([]ProgressActivity, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT rp.book_id, rp.device_id, rp.locator, rp.percentage, rp.updated_at,
+       books.title, devices.display_name
+FROM reading_progress AS rp
+JOIN books ON books.id = rp.book_id
+JOIN devices ON devices.id = rp.device_id
+ORDER BY julianday(rp.updated_at) DESC, rp.book_id, rp.device_id
+LIMIT ?
+`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent progress: %w", err)
+	}
+	defer rows.Close()
+
+	activities := make([]ProgressActivity, 0)
+	for rows.Next() {
+		var activity ProgressActivity
+		var percentage sql.NullFloat64
+		var updatedAt string
+		if err := rows.Scan(
+			&activity.BookID, &activity.DeviceID, &activity.Locator, &percentage, &updatedAt,
+			&activity.BookTitle, &activity.DeviceName,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent progress: %w", err)
+		}
+		if percentage.Valid {
+			activity.Percentage = &percentage.Float64
+		}
+		activity.UpdatedAt, err = parseTime(updatedAt)
+		if err != nil {
+			return nil, err
+		}
+		activities = append(activities, activity)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent progress: %w", err)
+	}
+	return activities, nil
 }
 
 func (s *Service) requireExists(ctx context.Context, table string, id string, message string) error {

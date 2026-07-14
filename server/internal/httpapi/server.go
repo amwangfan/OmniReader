@@ -133,6 +133,7 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("GET /admin/settings", settingsPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/filename-template", updateFilenameTemplate(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/password", updatePassword(opts.AuthService))
+		mux.HandleFunc("POST /admin/logout", webLogout(opts.AuthService))
 	}
 	if opts.AuthService != nil && opts.SyncService != nil {
 		mux.HandleFunc("GET /api/v1/devices", listDevices(opts.AuthService, opts.SyncService))
@@ -1085,7 +1086,17 @@ func updateNovel(authService *auth.Service, bookService *books.Service) http.Han
 }
 
 func syncPage(authService *auth.Service, service *syncservice.Service) http.HandlerFunc {
-	page := template.Must(template.New("sync").Parse(`<!doctype html>
+	page := template.Must(template.New("sync").Funcs(template.FuncMap{
+		"formatPercent": func(value *float64) string {
+			if value == nil {
+				return "—"
+			}
+			return fmt.Sprintf("%.0f%%", *value*100)
+		},
+		"formatTime": func(value time.Time) string {
+			return value.UTC().Format("2006-01-02 15:04 UTC")
+		},
+	}).Parse(`<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -1102,13 +1113,18 @@ func syncPage(authService *auth.Service, service *syncservice.Service) http.Hand
     .grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 16px; }
     .panel { border: 1px solid rgba(81,62,38,.14); border-radius: 28px; background: rgba(255,252,246,.9); box-shadow: 0 18px 60px rgba(52,38,21,.12); padding: 22px; }
     .num { font-size: 38px; font-weight: 900; margin: 0; color: #7a4f2a; }
+	.table-wrap { overflow-x: auto; }
+	table { width: 100%; border-collapse: collapse; min-width: 660px; }
+	th, td { padding: 12px 10px; border-bottom: 1px solid rgba(81,62,38,.12); text-align: left; }
+	th { color: #776b5d; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+	.empty { color: #776b5d; text-align: center; padding: 24px; }
     @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <main>
     <h1>&#21516;&#27493;</h1>
-    <p class="subtitle">&#36825;&#37324;&#20316;&#20026; Android &#23458;&#25143;&#31471;&#12289;&#38405;&#35835;&#36827;&#24230;&#12289;&#19979;&#36733;&#25554;&#20214;&#21516;&#27493;&#29366;&#24577;&#30340;&#20837;&#21475;&#12290;&#24403;&#21069;&#20808;&#24314;&#31435;&#39029;&#38754;&#19982;&#23548;&#33322;&#22522;&#30784;&#12290;</p>
+	<p class="subtitle">查看 Android 设备最近在线状态与跨设备阅读进度。</p>
     <nav class="nav" aria-label="Admin navigation">
       <a href="/admin/books">&#20027;&#39029;</a>
       <a href="/admin/novels">&#23567;&#35828;&#31649;&#29702;</a>
@@ -1117,12 +1133,22 @@ func syncPage(authService *auth.Service, service *syncservice.Service) http.Hand
     </nav>
     <section class="grid">
       <article class="panel"><p class="num">{{len .Devices}}</p><p class="muted">&#24050;&#27880;&#20876;&#35774;&#22791;</p></article>
-      <article class="panel"><p class="num">0</p><p class="muted">&#24453;&#21516;&#27493;&#20219;&#21153;</p></article>
+	  <article class="panel"><p class="num">{{len .Activities}}</p><p class="muted">最近进度记录</p></article>
       <article class="panel"><p class="num">0</p><p class="muted">&#19979;&#36733;&#25554;&#20214;</p></article>
     </section>
-    <section class="panel" style="margin-top: 16px;">
-      <h2>&#21518;&#32493;&#21516;&#27493;&#33021;&#21147;</h2>
-      <p class="muted">&#36825;&#37324;&#20250;&#25215;&#36733;&#35774;&#22791; last seen&#12289;&#20070;&#31821;&#25289;&#21462;&#38431;&#21015;&#12289;&#38405;&#35835;&#36827;&#24230;&#20914;&#31361;&#25552;&#31034;&#12289;&#25554;&#20214;&#19979;&#36733;&#35760;&#24405;&#31561;&#21151;&#33021;&#12290;</p>
+	<section class="panel" style="margin-top: 16px;">
+	  <h2>已注册设备</h2>
+	  <div class="table-wrap"><table>
+		<thead><tr><th>设备</th><th>平台</th><th>最近在线</th></tr></thead>
+		<tbody>{{range .Devices}}<tr><td>{{.DisplayName}}</td><td>{{.Platform}}</td><td>{{formatTime .LastSeenAt}}</td></tr>{{else}}<tr><td class="empty" colspan="3">尚无设备注册</td></tr>{{end}}</tbody>
+	  </table></div>
+	</section>
+	<section class="panel" style="margin-top: 16px;">
+	  <h2>最近阅读进度</h2>
+	  <div class="table-wrap"><table>
+		<thead><tr><th>书籍</th><th>设备</th><th>位置</th><th>进度</th><th>更新时间</th></tr></thead>
+		<tbody>{{range .Activities}}<tr><td>{{.BookTitle}}</td><td>{{.DeviceName}}</td><td>{{.Locator}}</td><td>{{formatPercent .Percentage}}</td><td>{{formatTime .UpdatedAt}}</td></tr>{{else}}<tr><td class="empty" colspan="5">尚无阅读进度</td></tr>{{end}}</tbody>
+	  </table></div>
     </section>
   </main>
 ` + adminNavigationScript + `
@@ -1134,6 +1160,7 @@ func syncPage(authService *auth.Service, service *syncservice.Service) http.Hand
 			return
 		}
 		var devices []syncservice.Device
+		var activities []syncservice.ProgressActivity
 		if service != nil {
 			var err error
 			devices, err = service.ListDevices(r.Context())
@@ -1141,9 +1168,14 @@ func syncPage(authService *auth.Service, service *syncservice.Service) http.Hand
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_devices_failed"})
 				return
 			}
+			activities, err = service.ListRecentProgress(r.Context(), 50)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_progress_failed"})
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = page.Execute(w, map[string]any{"Devices": devices})
+		_ = page.Execute(w, map[string]any{"Devices": devices, "Activities": activities})
 	}
 }
 
@@ -1192,6 +1224,11 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
         <button type="submit">Save filename pattern</button>
       </form>
     </section>
+	<section class="panel">
+	  <h2>Sign out</h2>
+	  <p class="subtitle">Revoke this browser session and remove its login cookies.</p>
+	  <form method="post" action="/admin/logout"><button type="submit">Sign out</button></form>
+	</section>
     <section class="panel">
       <h2>Change password</h2>
       <form method="post" action="/admin/settings/password">
@@ -1256,10 +1293,24 @@ func updatePassword(authService *auth.Service) http.HandlerFunc {
 			http.Redirect(w, r, "/admin/settings?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: accessCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
-		http.SetCookie(w, &http.Cookie{Name: refreshCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		clearAuthCookies(w)
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	}
+}
+
+func webLogout(authService *auth.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cookie, err := r.Cookie(refreshCookieName); err == nil && cookie.Value != "" {
+			_ = authService.Logout(r.Context(), cookie.Value)
+		}
+		clearAuthCookies(w)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	}
+}
+
+func clearAuthCookies(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: accessCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: refreshCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 }
 
 func createBookFromMultipart(w http.ResponseWriter, r *http.Request, bookService *books.Service) (books.Book, error) {

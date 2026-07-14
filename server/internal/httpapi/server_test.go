@@ -426,7 +426,7 @@ func TestNovelManagementPageUpdatesBookDetails(t *testing.T) {
 	}
 }
 
-func TestSyncPageRendersPlaceholder(t *testing.T) {
+func TestSyncPageRendersEmptyState(t *testing.T) {
 	handler := testAuthHandler(t)
 	cookie := webLoginForTest(t, handler)
 	req := httptest.NewRequest(http.MethodGet, "/admin/sync", nil)
@@ -438,7 +438,7 @@ func TestSyncPageRendersPlaceholder(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("sync page status = %d, body = %s", res.Code, res.Body.String())
 	}
-	if !strings.Contains(res.Body.String(), "OmniReader Sync") || !strings.Contains(res.Body.String(), "&#24453;&#21516;&#27493;&#20219;&#21153;") {
+	if !strings.Contains(res.Body.String(), "OmniReader Sync") || !strings.Contains(res.Body.String(), "尚无设备注册") || !strings.Contains(res.Body.String(), "尚无阅读进度") {
 		t.Fatalf("sync page missing expected content: %s", res.Body.String())
 	}
 	if !strings.Contains(res.Body.String(), "__omniAdminNavigation") {
@@ -493,6 +493,46 @@ func TestSettingsUpdateFilenameTemplateAndPassword(t *testing.T) {
 	}
 }
 
+func TestWebLogoutRevokesRefreshSessionAndClearsCookies(t *testing.T) {
+	handler := testAuthHandler(t)
+	cookies := webLoginCookiesForTest(t, handler)
+	var refreshCookie *http.Cookie
+	for _, cookie := range cookies {
+		if cookie.Name == refreshCookieName {
+			refreshCookie = cookie
+		}
+	}
+	if refreshCookie == nil {
+		t.Fatal("expected refresh cookie")
+	}
+
+	logoutReq := httptest.NewRequest(http.MethodPost, "/admin/logout", nil)
+	for _, cookie := range cookies {
+		logoutReq.AddCookie(cookie)
+	}
+	logoutRes := httptest.NewRecorder()
+	handler.ServeHTTP(logoutRes, logoutReq)
+	if logoutRes.Code != http.StatusSeeOther || logoutRes.Header().Get("Location") != "/login" {
+		t.Fatalf("logout status = %d location = %q", logoutRes.Code, logoutRes.Header().Get("Location"))
+	}
+	cleared := map[string]bool{}
+	for _, cookie := range logoutRes.Result().Cookies() {
+		if cookie.MaxAge < 0 {
+			cleared[cookie.Name] = true
+		}
+	}
+	if !cleared[accessCookieName] || !cleared[refreshCookieName] {
+		t.Fatalf("logout cookies were not cleared: %#v", logoutRes.Result().Cookies())
+	}
+
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", strings.NewReader(`{"refreshToken":"`+refreshCookie.Value+`"}`))
+	refreshRes := httptest.NewRecorder()
+	handler.ServeHTTP(refreshRes, refreshReq)
+	if refreshRes.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh after web logout status = %d, body = %s", refreshRes.Code, refreshRes.Body.String())
+	}
+}
+
 func TestDeviceAndProgressEndpoints(t *testing.T) {
 	handler := testAuthHandler(t)
 	token := loginForTest(t, handler)
@@ -528,6 +568,19 @@ func TestDeviceAndProgressEndpoints(t *testing.T) {
 	handler.ServeHTTP(listRes, listReq)
 	if listRes.Code != http.StatusOK || !strings.Contains(listRes.Body.String(), "BOOX") {
 		t.Fatalf("list devices status = %d, body = %s", listRes.Code, listRes.Body.String())
+	}
+
+	syncReq := httptest.NewRequest(http.MethodGet, "/admin/sync", nil)
+	syncReq.AddCookie(webLoginForTest(t, handler))
+	syncRes := httptest.NewRecorder()
+	handler.ServeHTTP(syncRes, syncReq)
+	if syncRes.Code != http.StatusOK {
+		t.Fatalf("sync page status = %d, body = %s", syncRes.Code, syncRes.Body.String())
+	}
+	for _, want := range []string{"Progress Book", "BOOX", "chapter:3", "50%", "2026-07-14 08:00 UTC"} {
+		if !strings.Contains(syncRes.Body.String(), want) {
+			t.Fatalf("sync page missing %q: %s", want, syncRes.Body.String())
+		}
 	}
 }
 
@@ -632,6 +685,17 @@ func uploadBookForTest(t *testing.T, handler http.Handler, token string, title s
 
 func webLoginForTest(t *testing.T, handler http.Handler) *http.Cookie {
 	t.Helper()
+	for _, cookie := range webLoginCookiesForTest(t, handler) {
+		if cookie.Name == accessCookieName {
+			return cookie
+		}
+	}
+	t.Fatal("expected access cookie")
+	return nil
+}
+
+func webLoginCookiesForTest(t *testing.T, handler http.Handler) []*http.Cookie {
+	t.Helper()
 	form := url.Values{}
 	form.Set("username", "admin")
 	form.Set("password", "password")
@@ -646,7 +710,7 @@ func webLoginForTest(t *testing.T, handler http.Handler) *http.Cookie {
 	if len(cookies) == 0 {
 		t.Fatal("expected login cookie")
 	}
-	return cookies[0]
+	return cookies
 }
 
 func fixtureEPUBBytes(t *testing.T, title string, author string) []byte {

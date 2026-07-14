@@ -57,6 +57,13 @@ func TestDeviceAndProgressLifecycle(t *testing.T) {
 	if latest.Locator != "chapter:2" {
 		t.Fatalf("older progress replaced newer progress: %#v", latest)
 	}
+	activities, err := service.ListRecentProgress(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activities) != 1 || activities[0].BookTitle != "Book" || activities[0].DeviceName != "BOOX" || activities[0].Locator != "chapter:2" {
+		t.Fatalf("activities = %#v", activities)
+	}
 }
 
 func TestPutProgressValidatesPercentage(t *testing.T) {
