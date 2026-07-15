@@ -83,7 +83,22 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+		`,
+	},
+	{
+		Version: 3,
+		Name:    "sync_indexes",
+		SQL: `
+CREATE INDEX IF NOT EXISTS idx_devices_last_seen_at ON devices(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reading_progress_book_updated_at ON reading_progress(book_id, julianday(updated_at) DESC);
 `,
+	},
+	{
+		Version: 4,
+		Name:    "book_source_format",
+		SQL: `
+ALTER TABLE books ADD COLUMN source_format TEXT NOT NULL DEFAULT 'epub';
+		`,
 	},
 }
 

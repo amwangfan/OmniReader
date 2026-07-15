@@ -26,6 +26,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.AdminUsername != DefaultAdmin {
 		t.Fatalf("admin username = %q, want %q", cfg.AdminUsername, DefaultAdmin)
 	}
+	if cfg.EbookConvertPath != DefaultEbookConvert {
+		t.Fatalf("ebook convert path = %q", cfg.EbookConvertPath)
+	}
 }
 
 func TestLoadAcceptsOverrides(t *testing.T) {
@@ -37,6 +40,7 @@ func TestLoadAcceptsOverrides(t *testing.T) {
 		"OMNIREADER_ADMIN_USERNAME": "owner",
 		"OMNIREADER_ADMIN_PASSWORD": "secret-password",
 		"OMNIREADER_TOKEN_SECRET":   "token-secret",
+		"OMNIREADER_EBOOK_CONVERT":  "/opt/calibre/ebook-convert",
 	}
 
 	cfg := Load(func(key string) (string, bool) {
@@ -64,6 +68,9 @@ func TestLoadAcceptsOverrides(t *testing.T) {
 	}
 	if cfg.TokenSecret != "token-secret" {
 		t.Fatalf("token secret = %q", cfg.TokenSecret)
+	}
+	if cfg.EbookConvertPath != "/opt/calibre/ebook-convert" {
+		t.Fatalf("ebook convert path = %q", cfg.EbookConvertPath)
 	}
 }
 

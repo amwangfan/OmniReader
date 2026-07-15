@@ -16,6 +16,7 @@ import (
 	"github.com/amwangfan/omnireader/server/internal/db"
 	"github.com/amwangfan/omnireader/server/internal/httpapi"
 	"github.com/amwangfan/omnireader/server/internal/storage"
+	syncservice "github.com/amwangfan/omnireader/server/internal/sync"
 )
 
 const version = "dev"
@@ -54,7 +55,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	bookService, err := books.NewService(conn, store, books.Options{})
+	converter := books.NewCalibreConverter(cfg.EbookConvertPath)
+	slog.Info("book converter status", "engine", converter.Status().Engine, "available", converter.Status().Available)
+	bookService, err := books.NewService(conn, store, books.Options{Converter: converter})
+	if err != nil {
+		return err
+	}
+	syncService, err := syncservice.NewService(conn, syncservice.Options{})
 	if err != nil {
 		return err
 	}
@@ -63,6 +70,7 @@ func run() error {
 		BuildInfo:   httpapi.BuildInfo{Version: version},
 		AuthService: authService,
 		BookService: bookService,
+		SyncService: syncService,
 	})
 	server := &http.Server{
 		Addr:              cfg.Addr,

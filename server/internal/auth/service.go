@@ -27,11 +27,12 @@ type Service struct {
 }
 
 type LoginResult struct {
-	UserID       string
-	Username     string
-	AccessToken  string
-	RefreshToken string
-	ExpiresAt    time.Time
+	UserID           string
+	Username         string
+	AccessToken      string
+	RefreshToken     string
+	ExpiresAt        time.Time
+	RefreshExpiresAt time.Time
 }
 
 type RefreshResult struct {
@@ -134,11 +135,12 @@ VALUES (?, ?, ?, ?, ?, ?)
 	}
 
 	return LoginResult{
-		UserID:       userID,
-		Username:     strings.TrimSpace(username),
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresAt:    expiresAt,
+		UserID:           userID,
+		Username:         strings.TrimSpace(username),
+		AccessToken:      accessToken,
+		RefreshToken:     refreshToken,
+		ExpiresAt:        expiresAt,
+		RefreshExpiresAt: now.Add(RefreshTokenTTL),
 	}, nil
 }
 
