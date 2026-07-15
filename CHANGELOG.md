@@ -1,5 +1,15 @@
 # OmniReader server changes
 
+## 2026-07-15
+
+### Documentation and handoff
+
+- Rewrote the README as an environment-independent project entry point.
+- Removed stale machine-specific paths and deployment addresses from the setup flow.
+- Added `docs/HANDOFF.md` with the two-repository state, completed modifications, test evidence, unverified areas, risks, deployment checklist, next-step options and a continuation prompt.
+- Clarified that the original design and plan are historical baselines and that the active Draft PR branches are the implementation source of truth.
+- No server runtime behavior changed in this documentation-only update.
+
 ## 2026-07-14
 
 ### Added
