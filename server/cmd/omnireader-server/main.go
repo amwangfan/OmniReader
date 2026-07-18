@@ -55,7 +55,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	bookService, err := books.NewService(conn, store, books.Options{})
+	converter := books.NewCalibreConverter(cfg.EbookConvertPath)
+	slog.Info("book converter status", "engine", converter.Status().Engine, "available", converter.Status().Available)
+	bookService, err := books.NewService(conn, store, books.Options{Converter: converter})
 	if err != nil {
 		return err
 	}

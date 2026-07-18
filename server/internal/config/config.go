@@ -10,6 +10,7 @@ const (
 	DefaultAddr    = "127.0.0.1:8080"
 	DefaultDataDir = "data"
 	DefaultAdmin   = "admin"
+	DefaultEbookConvert = "ebook-convert"
 )
 
 type Config struct {
@@ -20,6 +21,7 @@ type Config struct {
 	AdminUsername string
 	AdminPassword string
 	TokenSecret   string
+	EbookConvertPath string
 }
 
 func LoadFromEnv() Config {
@@ -34,6 +36,7 @@ func Load(lookup func(string) (string, bool)) Config {
 	adminUsername := valueOrDefault(lookup, "OMNIREADER_ADMIN_USERNAME", DefaultAdmin)
 	adminPassword := valueOrDefault(lookup, "OMNIREADER_ADMIN_PASSWORD", "")
 	tokenSecret := valueOrDefault(lookup, "OMNIREADER_TOKEN_SECRET", "")
+	ebookConvertPath := valueOrDefault(lookup, "OMNIREADER_EBOOK_CONVERT", DefaultEbookConvert)
 
 	return Config{
 		Addr:          addr,
@@ -43,6 +46,7 @@ func Load(lookup func(string) (string, bool)) Config {
 		AdminUsername: adminUsername,
 		AdminPassword: adminPassword,
 		TokenSecret:   tokenSecret,
+		EbookConvertPath: ebookConvertPath,
 	}
 }
 

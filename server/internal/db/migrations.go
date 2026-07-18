@@ -143,6 +143,13 @@ SELECT id, content_revision, storage_key, cover_key, cover_media_type, cover_wid
 FROM books;
 `,
 	},
+	{
+		Version: 5,
+		Name:    "book_source_format",
+		SQL: `
+ALTER TABLE books ADD COLUMN source_format TEXT NOT NULL DEFAULT 'epub';
+		`,
+	},
 }
 
 func OpenAndMigrate(ctx context.Context, databasePath string) (*sql.DB, error) {

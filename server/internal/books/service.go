@@ -25,12 +25,14 @@ const fixedUTCTimeLayout = "2006-01-02T15:04:05.000000000Z"
 type Service struct {
 	db        *sql.DB
 	store     storage.Store
+	converter Converter
 	now       func() time.Time
 	publishMu sync.Mutex
 }
 
 type Options struct {
-	Now func() time.Time
+	Now       func() time.Time
+	Converter Converter
 }
 
 type RevisionTime struct {
@@ -47,6 +49,7 @@ type Book struct {
 	Author          string       `json:"author"`
 	Filename        string       `json:"filename"`
 	Format          string       `json:"format"`
+	SourceFormat    string       `json:"sourceFormat"`
 	StorageKey      string       `json:"-"`
 	FileSize        int64        `json:"fileSize"`
 	Checksum        string       `json:"checksum"`
@@ -73,6 +76,11 @@ type UpdateInput struct {
 	Filename string
 }
 
+const (
+	MaxEPUBSize   = 64 << 20
+	MaxUploadSize = 128 << 20
+)
+
 func NewService(db *sql.DB, store storage.Store, opts Options) (*Service, error) {
 	if db == nil {
 		return nil, errors.New("database is required")
@@ -84,23 +92,41 @@ func NewService(db *sql.DB, store storage.Store, opts Options) (*Service, error)
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Service{db: db, store: store, now: now}, nil
+	converter := opts.Converter
+	if converter == nil {
+		converter = NewCalibreConverter("ebook-convert")
+	}
+	return &Service{db: db, store: store, converter: converter, now: now}, nil
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
 	if input.Body == nil {
 		return Book{}, errors.New("book body is required")
 	}
-	if strings.ToLower(filepath.Ext(input.Filename)) != ".epub" {
-		return Book{}, errors.New("only epub files are supported")
+	inputFormat := sourceFormat(input.Filename)
+	if !isSupportedSourceFormat(inputFormat) {
+		return Book{}, fmt.Errorf("unsupported book format %q; supported formats: %s", inputFormat, strings.Join(supportedSourceFormats, ", "))
 	}
 
-	data, err := io.ReadAll(input.Body)
+	data, err := io.ReadAll(io.LimitReader(input.Body, MaxUploadSize+1))
 	if err != nil {
 		return Book{}, fmt.Errorf("read book body: %w", err)
 	}
 	if len(data) == 0 {
 		return Book{}, errors.New("book body is empty")
+	}
+	if len(data) > MaxUploadSize {
+		return Book{}, errors.New("source file exceeds 128 MB limit")
+	}
+	if inputFormat != "epub" {
+		conversionContext, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		data, err = s.converter.Convert(conversionContext, input.Filename, data)
+		if err != nil {
+			return Book{}, err
+		}
+	} else if len(data) > MaxEPUBSize {
+		return Book{}, errors.New("epub file exceeds 64 MB limit")
 	}
 
 	title := strings.TrimSpace(input.Title)
@@ -136,6 +162,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
 		Author:          author,
 		Filename:        path.Base(storageKey),
 		Format:          "epub",
+		SourceFormat:    inputFormat,
 		StorageKey:      storageKey,
 		FileSize:        int64(len(data)),
 		Checksum:        checksum(data),
@@ -151,9 +178,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Book, error) {
 	}
 	defer tx.Rollback()
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO books (id, title, author, format, storage_key, file_size, checksum, content_revision, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, book.ID, book.Title, book.Author, book.Format, book.StorageKey, book.FileSize, book.Checksum, formatTime(book.ContentRevision.Time), formatTime(book.CreatedAt), formatTime(book.UpdatedAt))
+INSERT INTO books (id, title, author, format, source_format, storage_key, file_size, checksum, content_revision, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, book.ID, book.Title, book.Author, book.Format, book.SourceFormat, book.StorageKey, book.FileSize, book.Checksum, formatTime(book.ContentRevision.Time), formatTime(book.CreatedAt), formatTime(book.UpdatedAt))
 	if err != nil {
 		_ = s.store.Delete(ctx, storageKey)
 		return Book{}, fmt.Errorf("insert book: %w", err)
@@ -172,7 +199,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
 func (s *Service) List(ctx context.Context) ([]Book, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, title, author, format, storage_key, file_size, checksum, cover_key, cover_media_type, cover_width, cover_height, content_revision, archived_at, created_at, updated_at
+SELECT id, title, author, format, source_format, storage_key, file_size, checksum, cover_key, cover_media_type, cover_width, cover_height, content_revision, archived_at, created_at, updated_at
 FROM books
 WHERE archived_at IS NULL
 ORDER BY created_at DESC
@@ -196,9 +223,42 @@ ORDER BY created_at DESC
 	return result, nil
 }
 
+func (s *Service) Search(ctx context.Context, query string) ([]Book, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return s.List(ctx)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, title, author, format, source_format, storage_key, file_size, checksum, cover_key, cover_media_type, cover_width, cover_height, content_revision, archived_at, created_at, updated_at
+FROM books
+WHERE archived_at IS NULL AND (instr(lower(title), lower(?)) > 0 OR instr(lower(author), lower(?)) > 0)
+ORDER BY created_at DESC
+`, query, query)
+	if err != nil {
+		return nil, fmt.Errorf("search books: %w", err)
+	}
+	defer rows.Close()
+	result := make([]Book, 0)
+	for rows.Next() {
+		book, err := scanBook(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, book)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate searched books: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Service) ConversionStatus() ConversionStatus {
+	return s.converter.Status()
+}
+
 func (s *Service) Get(ctx context.Context, id string) (Book, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, title, author, format, storage_key, file_size, checksum, cover_key, cover_media_type, cover_width, cover_height, content_revision, archived_at, created_at, updated_at
+SELECT id, title, author, format, source_format, storage_key, file_size, checksum, cover_key, cover_media_type, cover_width, cover_height, content_revision, archived_at, created_at, updated_at
 FROM books
 WHERE id = ? AND archived_at IS NULL
 `, id)
@@ -404,7 +464,7 @@ func scanBook(row scanner) (Book, error) {
 	var contentRevision string
 	var createdAt string
 	var updatedAt string
-	err := row.Scan(&book.ID, &book.Title, &book.Author, &book.Format, &book.StorageKey, &book.FileSize, &book.Checksum, &book.CoverKey, &book.CoverMediaType, &book.CoverWidth, &book.CoverHeight, &contentRevision, &archivedAt, &createdAt, &updatedAt)
+	err := row.Scan(&book.ID, &book.Title, &book.Author, &book.Format, &book.SourceFormat, &book.StorageKey, &book.FileSize, &book.Checksum, &book.CoverKey, &book.CoverMediaType, &book.CoverWidth, &book.CoverHeight, &contentRevision, &archivedAt, &createdAt, &updatedAt)
 	if err != nil {
 		return Book{}, err
 	}

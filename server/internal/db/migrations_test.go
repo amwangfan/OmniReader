@@ -24,7 +24,7 @@ func TestOpenAndMigrateCreatesCoreTables(t *testing.T) {
 		}
 	}
 	for table, columns := range map[string][]string{
-		"books":            {"content_revision", "cover_media_type", "cover_width", "cover_height"},
+		"books":            {"content_revision", "cover_media_type", "cover_width", "cover_height", "source_format"},
 		"devices":          {"system_name", "manufacturer", "model", "app_version", "disabled_at"},
 		"reading_progress": {"content_revision", "client_updated_at"},
 	} {
