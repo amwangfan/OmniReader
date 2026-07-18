@@ -135,6 +135,7 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("GET /admin/settings", settingsPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/filename-template", updateFilenameTemplate(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/password", updatePassword(opts.AuthService))
+		mux.HandleFunc("POST /admin/logout", webLogout(opts.AuthService))
 		if opts.ReadingService != nil {
 			mux.HandleFunc("POST /admin/sync/devices/{deviceID}/rename", renameSyncDevice(opts.AuthService, opts.ReadingService))
 			mux.HandleFunc("POST /admin/sync/devices/{deviceID}/disable", disableSyncDevice(opts.AuthService, opts.ReadingService))
@@ -1235,6 +1236,11 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
         <button type="submit">Change password</button>
       </form>
     </section>
+    <section class="panel">
+      <h2>Sign out</h2>
+      <p class="subtitle">Remove this browser login cookie and return to the login page.</p>
+      <form method="post" action="/admin/logout"><button type="submit">Sign out</button></form>
+    </section>
   </main>
   </div>
 ` + adminNavigationScript + `
@@ -1290,9 +1296,23 @@ func updatePassword(authService *auth.Service) http.HandlerFunc {
 			http.Redirect(w, r, "/admin/settings?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "omnireader_access", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		clearAuthCookie(w)
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	}
+}
+
+func webLogout(authService *auth.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		clearAuthCookie(w)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	}
+}
+
+func clearAuthCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: "omnireader_access", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 }
 
 func createBookFromMultipart(w http.ResponseWriter, r *http.Request, bookService *books.Service) (books.Book, error) {
