@@ -12,6 +12,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const fixedUTCTimeLayout = "2006-01-02T15:04:05.000000000Z"
+
 type Migration struct {
 	Version int
 	Name    string
@@ -85,6 +87,69 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `,
 	},
+	{
+		Version: 3,
+		Name:    "reading_progress_devices",
+		SQL: `
+ALTER TABLE books ADD COLUMN content_revision TEXT NOT NULL DEFAULT '';
+ALTER TABLE devices ADD COLUMN system_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE devices ADD COLUMN manufacturer TEXT NOT NULL DEFAULT '';
+ALTER TABLE devices ADD COLUMN model TEXT NOT NULL DEFAULT '';
+ALTER TABLE devices ADD COLUMN app_version TEXT NOT NULL DEFAULT '';
+ALTER TABLE devices ADD COLUMN disabled_at TEXT;
+ALTER TABLE reading_progress ADD COLUMN content_revision TEXT NOT NULL DEFAULT '';
+ALTER TABLE reading_progress ADD COLUMN client_updated_at TEXT;
+CREATE TABLE reading_daily (
+  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  reading_date TEXT NOT NULL,
+  read_seconds INTEGER NOT NULL CHECK (read_seconds >= 0),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (book_id, device_id, reading_date)
+);
+CREATE INDEX reading_progress_updated_idx ON reading_progress(updated_at DESC);
+CREATE INDEX reading_daily_device_date_idx ON reading_daily(device_id, reading_date DESC);
+CREATE INDEX reading_daily_book_date_idx ON reading_daily(book_id, reading_date DESC);
+`,
+	},
+	{
+		Version: 4,
+		Name:    "epub_revisions",
+		SQL: `
+ALTER TABLE books ADD COLUMN cover_media_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE books ADD COLUMN cover_width INTEGER NOT NULL DEFAULT 0 CHECK (cover_width >= 0);
+ALTER TABLE books ADD COLUMN cover_height INTEGER NOT NULL DEFAULT 0 CHECK (cover_height >= 0);
+CREATE TABLE book_revisions (
+  book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  revision TEXT NOT NULL,
+  storage_key TEXT NOT NULL UNIQUE,
+  cover_key TEXT NOT NULL DEFAULT '',
+  cover_media_type TEXT NOT NULL DEFAULT '',
+  cover_width INTEGER NOT NULL DEFAULT 0 CHECK (cover_width >= 0),
+  cover_height INTEGER NOT NULL DEFAULT 0 CHECK (cover_height >= 0),
+  content_index_key TEXT NOT NULL DEFAULT '',
+  checksum TEXT NOT NULL,
+  file_size INTEGER NOT NULL CHECK (file_size >= 0),
+  change_type TEXT NOT NULL,
+  change_summary TEXT NOT NULL DEFAULT '',
+  is_original INTEGER NOT NULL DEFAULT 0 CHECK (is_original IN (0, 1)),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (book_id, revision)
+);
+CREATE UNIQUE INDEX book_revisions_one_original_idx ON book_revisions(book_id) WHERE is_original = 1;
+CREATE INDEX book_revisions_book_created_idx ON book_revisions(book_id, created_at DESC);
+INSERT INTO book_revisions (book_id, revision, storage_key, cover_key, cover_media_type, cover_width, cover_height, checksum, file_size, change_type, change_summary, is_original, created_at)
+SELECT id, content_revision, storage_key, cover_key, cover_media_type, cover_width, cover_height, checksum, file_size, 'upload', 'Original upload', 1, created_at
+FROM books;
+`,
+	},
+	{
+		Version: 5,
+		Name:    "book_source_format",
+		SQL: `
+ALTER TABLE books ADD COLUMN source_format TEXT NOT NULL DEFAULT 'epub';
+		`,
+	},
 }
 
 func OpenAndMigrate(ctx context.Context, databasePath string) (*sql.DB, error) {
@@ -101,6 +166,10 @@ func OpenAndMigrate(ctx context.Context, databasePath string) (*sql.DB, error) {
 	if err := conn.PingContext(ctx); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("ping sqlite database: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("enable sqlite foreign keys: %w", err)
 	}
 
 	if err := RunMigrations(ctx, conn); err != nil {
@@ -133,13 +202,21 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		return err
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC().Format(fixedUTCTimeLayout)
 	for _, migration := range migrations {
 		if applied[migration.Version] {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, migration.SQL); err != nil {
 			return fmt.Errorf("apply migration %d %s: %w", migration.Version, migration.Name, err)
+		}
+		if migration.Version == 3 {
+			if _, err := tx.ExecContext(ctx, `UPDATE books SET content_revision = ? WHERE content_revision = ''`, now); err != nil {
+				return fmt.Errorf("backfill book content revisions: %w", err)
+			}
+			if err := normalizeMigrationThreeTimes(ctx, tx); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`, migration.Version, migration.Name, now); err != nil {
 			return fmt.Errorf("record migration %d %s: %w", migration.Version, migration.Name, err)
@@ -148,6 +225,73 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migrations: %w", err)
+	}
+	return nil
+}
+
+func normalizeMigrationThreeTimes(ctx context.Context, tx *sql.Tx) error {
+	columns := []struct {
+		table  string
+		column string
+	}{
+		{table: "books", column: "created_at"},
+		{table: "books", column: "updated_at"},
+		{table: "books", column: "archived_at"},
+		{table: "devices", column: "last_seen_at"},
+		{table: "devices", column: "created_at"},
+		{table: "devices", column: "updated_at"},
+		{table: "devices", column: "disabled_at"},
+		{table: "reading_progress", column: "updated_at"},
+		{table: "reading_progress", column: "client_updated_at"},
+		{table: "reading_daily", column: "updated_at"},
+	}
+	for _, item := range columns {
+		if err := normalizeTimeColumn(ctx, tx, item.table, item.column); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeTimeColumn(ctx context.Context, tx *sql.Tx, table, column string) error {
+	query := fmt.Sprintf(`SELECT rowid, %s FROM %s WHERE %s IS NOT NULL AND %s <> ''`, column, table, column, column)
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("read legacy timestamps from %s.%s: %w", table, column, err)
+	}
+	type valueAtRow struct {
+		rowID int64
+		value string
+	}
+	var values []valueAtRow
+	for rows.Next() {
+		var item valueAtRow
+		if err := rows.Scan(&item.rowID, &item.value); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan legacy timestamp from %s.%s: %w", table, column, err)
+		}
+		values = append(values, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate legacy timestamps from %s.%s: %w", table, column, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close legacy timestamp rows for %s.%s: %w", table, column, err)
+	}
+	update := fmt.Sprintf(`UPDATE %s SET %s = ? WHERE rowid = ?`, table, column)
+	for _, item := range values {
+		parsed, err := time.Parse(time.RFC3339Nano, item.value)
+		if err != nil {
+			return fmt.Errorf("parse legacy timestamp %s.%s: %w", table, column, err)
+		}
+		normalized := parsed.UTC().Format(fixedUTCTimeLayout)
+		if normalized == item.value {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, update, normalized, item.rowID); err != nil {
+			return fmt.Errorf("normalize legacy timestamp %s.%s: %w", table, column, err)
+		}
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/amwangfan/omnireader/server/internal/auth"
 	"github.com/amwangfan/omnireader/server/internal/books"
+	"github.com/amwangfan/omnireader/server/internal/reading"
 )
 
 type BuildInfo struct {
@@ -21,9 +22,10 @@ type BuildInfo struct {
 }
 
 type Options struct {
-	BuildInfo   BuildInfo
-	AuthService *auth.Service
-	BookService *books.Service
+	BuildInfo      BuildInfo
+	AuthService    *auth.Service
+	BookService    *books.Service
+	ReadingService *reading.Service
 }
 
 const adminNavigationScript = `<script>
@@ -120,17 +122,27 @@ func NewHandler(opts Options) http.Handler {
 		mux.HandleFunc("GET /admin", adminHome)
 		mux.HandleFunc("GET /api/v1/books", listBooks(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /api/v1/books", uploadBook(opts.AuthService, opts.BookService))
+		mux.HandleFunc("GET /api/v1/books/{bookID}", getBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("GET /api/v1/books/{bookID}/download", downloadBook(opts.AuthService, opts.BookService))
+		mux.HandleFunc("GET /api/v1/conversion", conversionStatus(opts.AuthService, opts.BookService))
 		mux.HandleFunc("DELETE /api/v1/books/{bookID}", archiveBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("GET /admin/books", booksPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/books/upload", webUploadBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/books/{bookID}/delete", webDeleteBook(opts.AuthService, opts.BookService))
 		mux.HandleFunc("GET /admin/novels", novelsPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/novels/{bookID}", updateNovel(opts.AuthService, opts.BookService))
-		mux.HandleFunc("GET /admin/sync", syncPage(opts.AuthService))
+		mux.HandleFunc("GET /admin/sync", syncPage(opts.AuthService, opts.ReadingService))
 		mux.HandleFunc("GET /admin/settings", settingsPage(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/filename-template", updateFilenameTemplate(opts.AuthService, opts.BookService))
 		mux.HandleFunc("POST /admin/settings/password", updatePassword(opts.AuthService))
+		mux.HandleFunc("POST /admin/logout", webLogout(opts.AuthService))
+		if opts.ReadingService != nil {
+			mux.HandleFunc("POST /admin/sync/devices/{deviceID}/rename", renameSyncDevice(opts.AuthService, opts.ReadingService))
+			mux.HandleFunc("POST /admin/sync/devices/{deviceID}/disable", disableSyncDevice(opts.AuthService, opts.ReadingService))
+		}
+	}
+	if opts.AuthService != nil && opts.ReadingService != nil {
+		registerReadingRoutes(mux, opts.AuthService, opts.ReadingService)
 	}
 	return mux
 }
@@ -517,7 +529,8 @@ func listBooks(authService *auth.Service, bookService *books.Service) http.Handl
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		result, err := bookService.List(r.Context())
+		query := strings.TrimSpace(r.URL.Query().Get("q"))
+		result, err := bookService.Search(r.Context(), query)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list_books_failed"})
 			return
@@ -526,13 +539,40 @@ func listBooks(authService *auth.Service, bookService *books.Service) http.Handl
 	}
 }
 
+func getBook(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		book, err := bookService.Get(r.Context(), r.PathValue("bookID"))
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "book_not_found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"book": book})
+	}
+}
+
+func conversionStatus(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"conversion": bookService.ConversionStatus()})
+	}
+}
+
 func uploadBook(authService *auth.Service, bookService *books.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		book, err := createBookFromMultipart(r, bookService)
+		book, err := createBookFromMultipart(w, r, bookService)
 		if err != nil {
+			if errors.Is(err, books.ErrConversionUnavailable) {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "conversion_unavailable", "message": err.Error()})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -770,8 +810,10 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
     <section class="panel">
       <h2>Add a book</h2>
       <form method="post" action="/admin/books/upload" enctype="multipart/form-data">
-        <label for="file">EPUB file</label>
-        <input id="file" type="file" name="file" accept=".epub,application/epub+zip" required>
+        <label for="file">Book file</label>
+        <input id="file" type="file" name="file" accept=".epub,.mobi,.azw,.azw3,.txt,.pdf,.html,.htm,application/epub+zip" required>
+        <p class="meta">EPUB is stored directly. MOBI, AZW, AZW3, TXT, PDF and HTML are converted to EPUB with Calibre.</p>
+        {{if .Conversion.Available}}<p class="meta">Converter status: ready.</p>{{else}}<p class="flash error">Converter unavailable. EPUB uploads still work; install Calibre to enable other formats.</p>{{end}}
         <label for="title">Title override</label>
         <input id="title" type="text" name="title" placeholder="Leave blank to use filename">
         <label for="author">Author</label>
@@ -820,6 +862,7 @@ func booksPage(authService *auth.Service, bookService *books.Service) http.Handl
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = page.Execute(w, map[string]any{
 			"Books":     result,
+			"Conversion": bookService.ConversionStatus(),
 			"Flash":     flashMessage(r.URL.Query().Get("status"), r.URL.Query().Get("error")),
 			"FlashKind": flashKind(r.URL.Query().Get("error")),
 		})
@@ -831,7 +874,7 @@ func webUploadBook(authService *auth.Service, bookService *books.Service) http.H
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
-		if _, err := createBookFromMultipart(r, bookService); err != nil {
+		if _, err := createBookFromMultipart(w, r, bookService); err != nil {
 			http.Redirect(w, r, "/admin/books?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 			return
 		}
@@ -982,8 +1025,16 @@ func updateNovel(authService *auth.Service, bookService *books.Service) http.Han
 	}
 }
 
-func syncPage(authService *auth.Service) http.HandlerFunc {
-	page := template.Must(template.New("sync").Parse(`<!doctype html>
+func syncPage(authService *auth.Service, readingService *reading.Service) http.HandlerFunc {
+	page := template.Must(template.New("sync").Funcs(template.FuncMap{
+		"duration":    formatReadDuration,
+		"chapter":     func(value int) int { return value + 1 },
+		"blockNumber": func(value int) int { return value + 1 },
+		"locator": func(value reading.Locator) string {
+			encoded, _ := json.Marshal(value)
+			return string(encoded)
+		},
+	}).Parse(`<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -999,13 +1050,28 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
     .admin-nav { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
     .admin-nav a { border: 1px solid rgba(81,62,38,.14); border-radius: 999px; padding: 8px 12px; color: #776b5d; background: rgba(255,255,255,.46); text-decoration: none; font: 700 13px ui-sans-serif,system-ui,sans-serif; }
     .admin-nav a.active { color: #fff; background: #7a4f2a; border-color: transparent; }
-    #admin-content { max-width: 980px; margin: 0 auto; padding: 0 24px 44px; }
+    #admin-content { max-width: 1120px; margin: 0 auto; padding: 0 24px 44px; }
     .module-title { font-family: ui-serif, Georgia, "Noto Serif SC", serif; font-size: clamp(30px, 4vw, 46px); margin: 0 0 10px; letter-spacing: -.04em; }
     .subtitle, .muted { color: #776b5d; line-height: 1.7; }
-    .grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 16px; }
     .panel { border: 1px solid rgba(81,62,38,.14); border-radius: 28px; background: rgba(255,252,246,.9); box-shadow: 0 18px 60px rgba(52,38,21,.12); padding: 22px; }
     .num { font-size: 38px; font-weight: 900; margin: 0; color: #7a4f2a; }
+    .devices { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin-top: 16px; }
+    .device-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+    .device-head h3, .global h2 { margin: 0 0 7px; font-family: ui-serif,Georgia,serif; }
+    .badge { border-radius: 999px; padding: 5px 9px; background: rgba(31,111,91,.10); color: #1f6f5b; font-size: 12px; font-weight: 800; }
+    .badge.disabled { background: rgba(155,47,47,.10); color: #9b2f2f; }
+    .position { margin: 12px 0; font-weight: 800; }
+    form { display: flex; gap: 8px; margin-top: 12px; }
+    input { min-width: 0; flex: 1; border: 1px solid rgba(81,62,38,.14); border-radius: 14px; padding: 10px 12px; background: rgba(255,255,255,.76); }
+    button { border: 0; border-radius: 999px; padding: 10px 13px; background: #7a4f2a; color: white; font-weight: 800; cursor: pointer; }
+    button.danger { background: #9b2f2f; }
+    details { margin-top: 12px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(31,111,91,.07); padding: 12px; border-radius: 14px; font-size: 12px; }
+    .flash { border-radius: 18px; padding: 13px 16px; margin: 0 0 18px; background: rgba(31,111,91,.12); color: #1f6f5b; }
+    .empty { text-align: center; padding: 36px; }
     @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+	@media (max-width: 820px) { .devices { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -1021,17 +1087,36 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
     </nav>
   </header>
   <main id="admin-content">
-    <h2 class="module-title">&#21516;&#27493;</h2>
-    <p class="subtitle">&#36825;&#37324;&#20316;&#20026; Android &#23458;&#25143;&#31471;&#12289;&#38405;&#35835;&#36827;&#24230;&#12289;&#19979;&#36733;&#25554;&#20214;&#21516;&#27493;&#29366;&#24577;&#30340;&#20837;&#21475;&#12290;&#24403;&#21069;&#20808;&#24314;&#31435;&#39029;&#38754;&#19982;&#23548;&#33322;&#22522;&#30784;&#12290;</p>
+	<h2 class="module-title">Sync &amp; devices</h2>
+	<p class="subtitle">Reading positions stay independent per device; Global source shows the latest server-received position.</p>
+	{{if .Flash}}<div class="flash">{{.Flash}}</div>{{end}}
     <section class="grid">
-      <article class="panel"><p class="num">0</p><p class="muted">&#24050;&#27880;&#20876;&#35774;&#22791;</p></article>
-      <article class="panel"><p class="num">0</p><p class="muted">&#24453;&#21516;&#27493;&#20219;&#21153;</p></article>
-      <article class="panel"><p class="num">0</p><p class="muted">&#19979;&#36733;&#25554;&#20214;</p></article>
+	  <article class="panel"><p class="num">{{.Dashboard.DeviceCount}}</p><p class="muted">Registered devices</p></article>
+	  <article class="panel"><p class="num">{{duration .Dashboard.TodayReadSeconds}}</p><p class="muted">Today</p></article>
+	  <article class="panel"><p class="num">{{duration .Dashboard.SevenDayReadSeconds}}</p><p class="muted">Last 7 days</p></article>
+	  <article class="panel"><p class="num">{{duration .Dashboard.TotalReadSeconds}}</p><p class="muted">All time</p></article>
     </section>
-    <section class="panel" style="margin-top: 16px;">
-      <h2>&#21518;&#32493;&#21516;&#27493;&#33021;&#21147;</h2>
-      <p class="muted">&#36825;&#37324;&#20250;&#25215;&#36733;&#35774;&#22791; last seen&#12289;&#20070;&#31821;&#25289;&#21462;&#38431;&#21015;&#12289;&#38405;&#35835;&#36827;&#24230;&#20914;&#31361;&#25552;&#31034;&#12289;&#25554;&#20214;&#19979;&#36733;&#35760;&#24405;&#31561;&#21151;&#33021;&#12290;</p>
-    </section>
+	{{with .Dashboard.Global}}
+	<section class="panel global" style="margin-top:16px">
+	  <h2>Global source</h2>
+	  <p><strong>{{$.Dashboard.GlobalBookTitle}}</strong> from <strong>{{.DeviceName}}</strong></p>
+	  <p class="position">Chapter {{chapter .Locator.ChapterIndex}} · Block {{blockNumber .Locator.BlockIndex}} · {{duration $.Dashboard.TotalReadSeconds}} total</p>
+	  <p class="muted">Updated {{.UpdatedAt}}{{if .RevisionMismatch}} · content revision mismatch{{end}}</p>
+	  <details><summary>Raw locator</summary><pre>{{locator .Locator}}</pre></details>
+	</section>
+	{{end}}
+	{{if .Dashboard.Devices}}
+	<section class="devices">
+	{{range .Dashboard.Devices}}
+	  <article class="panel">
+		<div class="device-head"><div><h3>{{.DisplayName}}</h3><div class="muted">{{.SystemName}} · {{.Manufacturer}} {{.Model}} · app {{.AppVersion}}</div></div>{{if .DisabledAt}}<span class="badge disabled">Disabled</span>{{else}}<span class="badge">Active</span>{{end}}</div>
+		<p class="muted">Last seen {{.LastSeenAt}} · today {{duration .TodayReadSeconds}} · 7 days {{duration .SevenDayReadSeconds}} · total {{duration .TotalReadSeconds}}</p>
+		{{with .LatestBook}}<p><strong>{{.Title}}</strong></p><p class="position">Chapter {{chapter .Locator.ChapterIndex}} · Block {{blockNumber .Locator.BlockIndex}}</p><p class="muted">{{duration .ReadSeconds}} ({{.ReadSeconds}}s) in this book</p><details><summary>Details and raw locator</summary><pre>{{locator .Locator}}</pre></details>{{else}}<p class="muted">No reading position uploaded yet.</p>{{end}}
+		{{if not .DisabledAt}}<form method="post" action="/admin/sync/devices/{{.ID}}/rename"><input name="display_name" value="{{.DisplayName}}" maxlength="128" required><button type="submit">Rename</button></form><form method="post" action="/admin/sync/devices/{{.ID}}/disable"><button class="danger" type="submit">Disable device</button></form>{{end}}
+	  </article>
+	{{end}}
+	</section>
+	{{else}}<section class="panel empty" style="margin-top:16px">No devices have registered yet.</section>{{end}}
   </main>
   </div>
 ` + adminNavigationScript + `
@@ -1042,8 +1127,47 @@ func syncPage(authService *auth.Service) http.HandlerFunc {
 		if _, ok := requireUser(w, r, authService); !ok {
 			return
 		}
+		dashboard := reading.Dashboard{Devices: []reading.DeviceSummary{}}
+		if readingService != nil {
+			var err error
+			dashboard, err = readingService.Dashboard(r.Context())
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "sync_dashboard_failed"})
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = page.Execute(w, nil)
+		_ = page.Execute(w, map[string]any{"Dashboard": dashboard, "Flash": syncFlashMessage(r.URL.Query().Get("status"))})
+	}
+}
+
+func renameSyncDevice(authService *auth.Service, service *reading.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Redirect(w, r, "/admin/sync?error=invalid_form", http.StatusSeeOther)
+			return
+		}
+		if _, err := service.RenameDevice(r.Context(), r.PathValue("deviceID"), r.FormValue("display_name")); err != nil {
+			http.Redirect(w, r, "/admin/sync?error=rename_failed", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/admin/sync?status=renamed", http.StatusSeeOther)
+	}
+}
+
+func disableSyncDevice(authService *auth.Service, service *reading.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		if err := service.DisableDevice(r.Context(), r.PathValue("deviceID")); err != nil {
+			http.Redirect(w, r, "/admin/sync?error=disable_failed", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/admin/sync?status=disabled", http.StatusSeeOther)
 	}
 }
 
@@ -1112,6 +1236,11 @@ func settingsPage(authService *auth.Service, bookService *books.Service) http.Ha
         <button type="submit">Change password</button>
       </form>
     </section>
+    <section class="panel">
+      <h2>Sign out</h2>
+      <p class="subtitle">Remove this browser login cookie and return to the login page.</p>
+      <form method="post" action="/admin/logout"><button type="submit">Sign out</button></form>
+    </section>
   </main>
   </div>
 ` + adminNavigationScript + `
@@ -1167,13 +1296,28 @@ func updatePassword(authService *auth.Service) http.HandlerFunc {
 			http.Redirect(w, r, "/admin/settings?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "omnireader_access", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		clearAuthCookie(w)
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	}
 }
 
-func createBookFromMultipart(r *http.Request, bookService *books.Service) (books.Book, error) {
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
+func webLogout(authService *auth.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := requireUser(w, r, authService); !ok {
+			return
+		}
+		clearAuthCookie(w)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	}
+}
+
+func clearAuthCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: "omnireader_access", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+}
+
+func createBookFromMultipart(w http.ResponseWriter, r *http.Request, bookService *books.Service) (books.Book, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, books.MaxUploadSize+(1<<20))
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		return books.Book{}, errors.New("invalid upload form")
 	}
 	file, header, err := r.FormFile("file")
@@ -1261,6 +1405,33 @@ func managementFlashMessage(status string, err string) string {
 	default:
 		return ""
 	}
+}
+
+func syncFlashMessage(status string) string {
+	switch status {
+	case "renamed":
+		return "Device renamed."
+	case "disabled":
+		return "Device disabled. Its history remains readable."
+	default:
+		return ""
+	}
+}
+
+func formatReadDuration(seconds int64) string {
+	if seconds < 60 {
+		return strconv.FormatInt(seconds, 10) + "s"
+	}
+	hours := seconds / 3600
+	minutes := (seconds % 3600) / 60
+	remaining := seconds % 60
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	if remaining > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, remaining)
+	}
+	return fmt.Sprintf("%dm", minutes)
 }
 
 func flashKind(err string) string {

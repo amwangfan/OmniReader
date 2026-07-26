@@ -3,6 +3,7 @@ package books
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -24,8 +25,19 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
-	if book.Title != "The Parsed Book" || book.Author != "The Parsed Author" || book.Format != "epub" {
+	if book.Title != "The Parsed Book" || book.Author != "The Parsed Author" || book.Format != "epub" || book.SourceFormat != "epub" {
 		t.Fatalf("unexpected book: %#v", book)
+	}
+	wantRevision := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+	if !book.ContentRevision.Equal(wantRevision) {
+		t.Fatalf("ContentRevision = %v, want %v", book.ContentRevision, wantRevision)
+	}
+	encoded, err := json.Marshal(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"contentRevision":"2026-07-04T10:00:00.000000000Z"`) {
+		t.Fatalf("book JSON does not preserve fixed revision precision: %s", encoded)
 	}
 	if !strings.HasSuffix(book.StorageKey, "The Parsed Book-The Parsed Author.epub") {
 		t.Fatalf("storage key = %q", book.StorageKey)
@@ -37,6 +49,9 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 	}
 	if len(books) != 1 || books[0].ID != book.ID {
 		t.Fatalf("unexpected books: %#v", books)
+	}
+	if !books[0].ContentRevision.Equal(wantRevision) {
+		t.Fatalf("listed ContentRevision = %v, want %v", books[0].ContentRevision, wantRevision)
 	}
 
 	_, reader, err := service.Open(ctx, book.ID)
@@ -67,12 +82,30 @@ func TestCreateListOpenAndArchiveBook(t *testing.T) {
 	}
 }
 
-func TestCreateRejectsNonEPUB(t *testing.T) {
+func TestCreateRejectsUnsupportedFormat(t *testing.T) {
 	ctx := context.Background()
 	service := testService(t, ctx)
 
-	if _, err := service.Create(ctx, CreateInput{Filename: "book.pdf", Body: strings.NewReader("pdf")}); err == nil {
-		t.Fatal("expected non-EPUB upload to fail")
+	if _, err := service.Create(ctx, CreateInput{Filename: "book.docx", Body: strings.NewReader("docx")}); err == nil {
+		t.Fatal("expected unsupported upload to fail")
+	}
+}
+
+func TestCreateConvertsSupportedSourceToEPUB(t *testing.T) {
+	ctx := context.Background()
+	converted := fixtureEPUB(t, "Converted PDF", "Converted Author")
+	service := testServiceWithConverter(t, ctx, &fakeConverter{output: converted})
+
+	book, err := service.Create(ctx, CreateInput{Filename: "source.pdf", Body: strings.NewReader("%PDF fixture")})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if book.Format != "epub" || book.SourceFormat != "pdf" || book.Title != "Converted PDF" {
+		t.Fatalf("unexpected converted book: %#v", book)
+	}
+	result, err := service.Search(ctx, "converted author")
+	if err != nil || len(result) != 1 || result[0].ID != book.ID {
+		t.Fatalf("search result = %#v, err = %v", result, err)
 	}
 }
 
@@ -125,6 +158,18 @@ func TestUpdateDetailsRenamesStoredFile(t *testing.T) {
 		t.Fatalf("renamed book should open: %v", err)
 	}
 	_ = reader.Close()
+	revisions, err := service.ListRevisions(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revisions) != 1 || revisions[0].StorageKey != updated.StorageKey {
+		t.Fatalf("renamed current revision key = %#v, want %q", revisions, updated.StorageKey)
+	}
+	revisionReader, err := service.store.Open(ctx, revisions[0].StorageKey)
+	if err != nil {
+		t.Fatalf("renamed revision object should open: %v", err)
+	}
+	_ = revisionReader.Close()
 }
 
 func TestUpdateDetailsRequiresTitle(t *testing.T) {
@@ -143,7 +188,34 @@ func TestUpdateDetailsRequiresTitle(t *testing.T) {
 	}
 }
 
+func TestDeleteRemovesDailyReadingRows(t *testing.T) {
+	ctx := context.Background()
+	service := testService(t, ctx)
+	book, err := service.Create(ctx, CreateInput{Filename: "book.epub", Body: strings.NewReader(string(fixtureEPUB(t, "Book", "Author")))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := "2026-07-04T10:00:00Z"
+	if _, err := service.db.Exec(`INSERT INTO devices (id,display_name,platform,last_seen_at,created_at,updated_at) VALUES ('11111111-1111-4111-8111-111111111111','Device','android',?,?,?)`, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(`INSERT INTO reading_daily (book_id,device_id,reading_date,read_seconds,updated_at) VALUES (?,'11111111-1111-4111-8111-111111111111','2026-07-04',10,?)`, book.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(ctx, book.ID); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := service.db.QueryRow(`SELECT COUNT(*) FROM reading_daily WHERE book_id=?`, book.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("daily rows after delete = %d, err=%v", count, err)
+	}
+}
+
 func testService(t *testing.T, ctx context.Context) *Service {
+	return testServiceWithConverter(t, ctx, nil)
+}
+
+func testServiceWithConverter(t *testing.T, ctx context.Context, converter Converter) *Service {
 	t.Helper()
 	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -158,6 +230,7 @@ func testService(t *testing.T, ctx context.Context) *Service {
 		t.Fatalf("NewLocal returned error: %v", err)
 	}
 	service, err := NewService(conn, store, Options{
+		Converter: converter,
 		Now: func() time.Time {
 			return time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
 		},
@@ -166,4 +239,17 @@ func testService(t *testing.T, ctx context.Context) *Service {
 		t.Fatalf("NewService returned error: %v", err)
 	}
 	return service
+}
+
+type fakeConverter struct {
+	output []byte
+	err    error
+}
+
+func (f *fakeConverter) Convert(_ context.Context, _ string, _ []byte) ([]byte, error) {
+	return f.output, f.err
+}
+
+func (f *fakeConverter) Status() ConversionStatus {
+	return ConversionStatus{Engine: "fake", Available: true, SupportedFormats: supportedSourceFormats}
 }

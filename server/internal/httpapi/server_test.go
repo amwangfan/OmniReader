@@ -17,6 +17,7 @@ import (
 	"github.com/amwangfan/omnireader/server/internal/auth"
 	"github.com/amwangfan/omnireader/server/internal/books"
 	"github.com/amwangfan/omnireader/server/internal/db"
+	"github.com/amwangfan/omnireader/server/internal/reading"
 	"github.com/amwangfan/omnireader/server/internal/storage"
 	_ "modernc.org/sqlite"
 )
@@ -232,12 +233,35 @@ func TestBookUploadListDownloadAndArchive(t *testing.T) {
 		t.Fatal("uploaded book id is required")
 	}
 
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/books/"+uploadPayload.Book.ID, nil)
+	detailReq.Header.Set("Authorization", "Bearer "+token)
+	detailRes := httptest.NewRecorder()
+	handler.ServeHTTP(detailRes, detailReq)
+	if detailRes.Code != http.StatusOK || !strings.Contains(detailRes.Body.String(), `"sourceFormat":"epub"`) {
+		t.Fatalf("detail status = %d, body = %s", detailRes.Code, detailRes.Body.String())
+	}
+
 	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/books", nil)
 	listReq.Header.Set("Authorization", "Bearer "+token)
 	listRes := httptest.NewRecorder()
 	handler.ServeHTTP(listRes, listReq)
 	if listRes.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body = %s", listRes.Code, listRes.Body.String())
+	}
+	searchReq := httptest.NewRequest(http.MethodGet, "/api/v1/books?q=Uploaded", nil)
+	searchReq.Header.Set("Authorization", "Bearer "+token)
+	searchRes := httptest.NewRecorder()
+	handler.ServeHTTP(searchRes, searchReq)
+	if searchRes.Code != http.StatusOK || !strings.Contains(searchRes.Body.String(), "Uploaded") {
+		t.Fatalf("search status = %d, body = %s", searchRes.Code, searchRes.Body.String())
+	}
+
+	conversionReq := httptest.NewRequest(http.MethodGet, "/api/v1/conversion", nil)
+	conversionReq.Header.Set("Authorization", "Bearer "+token)
+	conversionRes := httptest.NewRecorder()
+	handler.ServeHTTP(conversionRes, conversionReq)
+	if conversionRes.Code != http.StatusOK || !strings.Contains(conversionRes.Body.String(), "supportedFormats") || !strings.Contains(conversionRes.Body.String(), "mobi") {
+		t.Fatalf("conversion status = %d, body = %s", conversionRes.Code, conversionRes.Body.String())
 	}
 
 	downloadReq := httptest.NewRequest(http.MethodGet, "/api/v1/books/"+uploadPayload.Book.ID+"/download", nil)
@@ -264,6 +288,28 @@ func TestBookUploadListDownloadAndArchive(t *testing.T) {
 	handler.ServeHTTP(downloadAgainRes, downloadAgainReq)
 	if downloadAgainRes.Code != http.StatusNotFound {
 		t.Fatalf("download after delete status = %d", downloadAgainRes.Code)
+	}
+}
+
+func TestNonEPUBUploadReportsUnavailableConverter(t *testing.T) {
+	handler := testAuthHandler(t)
+	token := loginForTest(t, handler)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	file, err := writer.CreateFormFile("file", "sample.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = file.Write([]byte("A sample plain text book."))
+	_ = writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/books", &body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusServiceUnavailable || !strings.Contains(res.Body.String(), "conversion_unavailable") {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
 	}
 }
 
@@ -449,9 +495,37 @@ func TestNovelManagementPageUpdatesBookDetails(t *testing.T) {
 	}
 }
 
-func TestSyncPageRendersPlaceholder(t *testing.T) {
+func TestSyncPageRendersDeviceDashboardAndActions(t *testing.T) {
 	handler := testAuthHandler(t)
 	cookie := webLoginForTest(t, handler)
+	token := loginForTest(t, handler)
+	bookID := uploadBookForTest(t, handler, token, "Sync Book", "Author")
+
+	for _, device := range []struct{ id, name, model string }{
+		{"11111111-1111-4111-8111-111111111111", "Living Room", "Leaf5"},
+		{"22222222-2222-4222-8222-222222222222", "Bedroom", "Tab Mini C"},
+	} {
+		response := performJSON(handler, http.MethodPut, "/api/v1/devices/current", `{"id":"`+device.id+`","systemName":"`+device.name+`","platform":"android","manufacturer":"Onyx","model":"`+device.model+`","appVersion":"1.2.3"}`, token)
+		if response.Code != http.StatusOK {
+			t.Fatalf("register %s: %s", device.name, response.Body.String())
+		}
+	}
+	list := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/books", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(list, listReq)
+	var booksPayload struct {
+		Books []books.Book `json:"books"`
+	}
+	if err := json.NewDecoder(list.Body).Decode(&booksPayload); err != nil || len(booksPayload.Books) != 1 {
+		t.Fatalf("decode books: %#v %v", booksPayload, err)
+	}
+	revision := booksPayload.Books[0].ContentRevision.Format(time.RFC3339Nano)
+	progressBody := `{"deviceId":"11111111-1111-4111-8111-111111111111","locator":{"version":1,"contentRevision":"` + revision + `","chapterHref":"OPS/chapter-2.xhtml","chapterIndex":1,"blockIndex":7,"charOffset":3,"textQuote":"context","textHash":"hash","chapterProgress":0.4,"bookProgress":0.3},"percentage":0.3,"dailyReadSeconds":{"2026-07-04":125}}`
+	progress := performJSON(handler, http.MethodPut, "/api/v1/books/"+bookID+"/progress", progressBody, token)
+	if progress.Code != http.StatusOK {
+		t.Fatalf("save progress: %s", progress.Body.String())
+	}
 	req := httptest.NewRequest(http.MethodGet, "/admin/sync", nil)
 	req.AddCookie(cookie)
 	res := httptest.NewRecorder()
@@ -461,11 +535,31 @@ func TestSyncPageRendersPlaceholder(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("sync page status = %d, body = %s", res.Code, res.Body.String())
 	}
-	if !strings.Contains(res.Body.String(), "OmniReader Sync") || !strings.Contains(res.Body.String(), "&#24453;&#21516;&#27493;&#20219;&#21153;") {
-		t.Fatalf("sync page missing expected content: %s", res.Body.String())
+	page := res.Body.String()
+	for _, want := range []string{"OmniReader Sync", "Living Room", "Bedroom", "Leaf5", "Tab Mini C", "Sync Book", "Chapter 2", "Block 8", "125s", "Global source", `name="display_name"`, `/admin/sync/devices/11111111-1111-4111-8111-111111111111/disable`, `<details>`, "OPS/chapter-2.xhtml"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("sync page missing %q: %s", want, page)
+		}
 	}
-	if !strings.Contains(res.Body.String(), "__omniAdminNavigation") {
-		t.Fatalf("sync page missing navigation script: %s", res.Body.String())
+	if strings.Count(page, `id="admin-app"`) != 1 || !strings.Contains(page, "__omniAdminNavigation") {
+		t.Fatalf("sync page lost persistent shell: %s", page)
+	}
+
+	renameForm := url.Values{"display_name": {"Desk Reader"}}
+	renameReq := httptest.NewRequest(http.MethodPost, "/admin/sync/devices/11111111-1111-4111-8111-111111111111/rename", strings.NewReader(renameForm.Encode()))
+	renameReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	renameReq.AddCookie(cookie)
+	renameRes := httptest.NewRecorder()
+	handler.ServeHTTP(renameRes, renameReq)
+	if renameRes.Code != http.StatusSeeOther || renameRes.Header().Get("Location") != "/admin/sync?status=renamed" {
+		t.Fatalf("rename response=%d location=%q", renameRes.Code, renameRes.Header().Get("Location"))
+	}
+	disableReq := httptest.NewRequest(http.MethodPost, "/admin/sync/devices/22222222-2222-4222-8222-222222222222/disable", nil)
+	disableReq.AddCookie(cookie)
+	disableRes := httptest.NewRecorder()
+	handler.ServeHTTP(disableRes, disableReq)
+	if disableRes.Code != http.StatusSeeOther || disableRes.Header().Get("Location") != "/admin/sync?status=disabled" {
+		t.Fatalf("disable response=%d location=%q", disableRes.Code, disableRes.Header().Get("Location"))
 	}
 }
 
@@ -547,16 +641,23 @@ func testAuthHandler(t *testing.T) http.Handler {
 	}
 	bookService, err := books.NewService(conn, store, books.Options{
 		Now: func() time.Time {
-			return time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+			return time.Date(2026, 7, 4, 10, 0, 0, 123456789, time.UTC)
 		},
 	})
 	if err != nil {
 		t.Fatalf("books.NewService returned error: %v", err)
 	}
+	readingService, err := reading.NewService(conn, reading.Options{Now: func() time.Time {
+		return time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+	}})
+	if err != nil {
+		t.Fatalf("reading.NewService returned error: %v", err)
+	}
 	return NewHandler(Options{
-		BuildInfo:   BuildInfo{Version: "test"},
-		AuthService: service,
-		BookService: bookService,
+		BuildInfo:      BuildInfo{Version: "test"},
+		AuthService:    service,
+		BookService:    bookService,
+		ReadingService: readingService,
 	})
 }
 
