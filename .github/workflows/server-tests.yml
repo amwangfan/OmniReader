@@ -3,6 +3,7 @@ name: Server tests
 on:
   push:
     branches:
+      - "main"
       - "agent/**"
   pull_request:
     paths:
